@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "detector": {
+    "file": "detector.tflite",
+    "arch": "yolov8n",
+    "input": [640, 640, 3],
+    "dtype": "float32",
+    "input_range": [0, 1],
+    "score_threshold": 0.25,
+    "model_version": "yolov8n-640@placeholder"
+  },
+  "embedder": {
+    "file": "embedder.tflite",
+    "arch": "mobilenet_v2",
+    "input": [224, 224, 3],
+    "dtype": "float32",
+    "input_range": [-1, 1],
+    "dim": 1280,
+    "model_version": "mobilenet_v2-224-1280@placeholder"
+  },
+  "match_threshold": 0.75
+}

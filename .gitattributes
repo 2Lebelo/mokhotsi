@@ -1,0 +1,10 @@
+# Normalise line endings in the repo; check out with LF for tooling that cares (Prettier, ruff).
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+
+# On-device models live in Git LFS (run `git lfs install` once per machine).
+*.tflite filter=lfs diff=lfs merge=lfs -text

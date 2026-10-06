@@ -1,0 +1,9 @@
+{
+  "acked": ["0b6f3c2e-8a41-4d9b-b1f7-3e2a9c5d7f10", "c4e8a1d2-6b3f-4a7e-9c05-2d1e3f4a5b6c"],
+  "rejected": [
+    {
+      "op_id": "5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+      "reason": "entity_not_found"
+    }
+  ]
+}

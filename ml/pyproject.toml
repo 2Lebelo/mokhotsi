@@ -1,0 +1,30 @@
+[project]
+name = "mokhotsi-ml"
+version = "0.1.0"
+description = "Model export, parity and matching evaluation for Mokhotsi's on-device recognition."
+requires-python = ">=3.12"
+dependencies = [
+    "ai-edge-litert>=2.2.0",
+    "numpy>=2.5.3",
+    "pillow>=12.3.0",
+    "tensorflow>=2.21.0",
+    "ultralytics>=8.4.173",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.10",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "RUF"]
+
+[tool.ruff.lint.pycodestyle]
+max-line-length = 120

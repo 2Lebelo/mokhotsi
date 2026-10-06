@@ -1,0 +1,33 @@
+# --- secrets / local env (ship *.env.example instead) ---
+.env
+.env.*
+!.env.example
+
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# --- Python (api/, ml/) ---
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- ML outputs (models are copied into mobile/assets/models when shipped) ---
+ml/artifacts/*
+!ml/artifacts/.gitkeep
+!ml/artifacts/README.md
+ml/notebooks/.ipynb_checkpoints/
+*.pt
+*.onnx
+*.h5
+*.keras
+saved_model/
+
+# --- Node (mobile/ has its own .gitignore too) ---
+node_modules/

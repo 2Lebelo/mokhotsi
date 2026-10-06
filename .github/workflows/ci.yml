@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    name: api (ruff + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    services:
+      mongo:
+        image: mongo:8
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      MONGO_URI: mongodb://localhost:27017
+      MONGO_DB_TEST: mokhotsi_ci
+      JWT_SECRET: ci-only-secret-not-used-anywhere-else-000000
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.23"
+          enable-cache: true
+          cache-dependency-glob: api/uv.lock
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # `CI=true` (set by GitHub) makes tests marked requires_mongo fail instead of skip.
+      - run: uv run pytest
+
+  mobile:
+    name: mobile (tsc + eslint + prettier + jest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false # .tflite models are not needed to type-check, lint or test.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci # postinstall regenerates src/ml/modelAssets.generated.ts
+      - run: npx tsc --noEmit
+      - run: npx expo lint
+      - run: npm run format:check
+      - run: npx jest --ci
+
+  ml:
+    name: ml (ruff)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ml
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.23"
+          enable-cache: true
+          cache-dependency-glob: ml/uv.lock
+      # Only the dev group (ruff): TensorFlow/Ultralytics are not needed to lint.
+      - run: uv sync --locked --only-dev
+      - run: uv run --only-dev ruff check .
+      - run: uv run --only-dev ruff format --check .
+      - run: uv run --only-dev python scripts/export_detector.py --help

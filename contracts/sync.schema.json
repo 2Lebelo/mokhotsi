@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mokhotsi:contracts:sync",
+  "title": "Mokhotsi sync contract",
+  "description": "Wire format between the phone and the API. Mirrored by api/app/schemas/sync.py (Pydantic) and mobile/src/contracts/sync.ts (TypeScript); both test suites validate contracts/examples/*.json against this file. Limits: push ops <= 200 per request; GET /sync/pull?cursor=&limit= with 1 <= limit <= 500. Ordering is by the server-assigned per-shop `seq`, never a device clock. Money is integer cents. Ids are client-generated UUID v4.",
+  "$defs": {
+    "Uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 / RFC 3339 UTC timestamp. Informational only; never used for ordering."
+    },
+    "Cents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "Seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Server-assigned, strictly increasing per shop."
+    },
+    "Entity": {
+      "type": "string",
+      "enum": ["products", "embeddings", "sales"]
+    },
+    "OpKind": {
+      "type": "string",
+      "enum": ["upsert", "delete"]
+    },
+    "MatchMethod": {
+      "type": "string",
+      "enum": ["vision", "barcode", "manual"]
+    },
+    "Op": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op_id", "entity", "entity_id", "op", "payload"],
+      "properties": {
+        "op_id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "Idempotency key; the server records applied op_ids (applied_ops, TTL 30 days)."
+        },
+        "entity": { "$ref": "#/$defs/Entity" },
+        "entity_id": { "$ref": "#/$defs/Uuid" },
+        "op": { "$ref": "#/$defs/OpKind" },
+        "payload": {
+          "type": "object",
+          "description": "For upsert: the entity record without `seq` (see ProductRecord / EmbeddingRecord / SaleRecord). For delete: {}."
+        }
+      }
+    },
+    "PushRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_id", "ops"],
+      "properties": {
+        "device_id": { "$ref": "#/$defs/Uuid" },
+        "ops": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "items": { "$ref": "#/$defs/Op" }
+        }
+      }
+    },
+    "Rejection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op_id", "reason"],
+      "properties": {
+        "op_id": { "$ref": "#/$defs/Uuid" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "PushResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["acked", "rejected"],
+      "properties": {
+        "acked": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Uuid" }
+        },
+        "rejected": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Rejection" }
+        }
+      }
+    },
+    "ProductRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "price_cents", "barcode", "deleted", "updated_at", "seq"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "name": { "type": "string", "minLength": 1 },
+        "price_cents": { "$ref": "#/$defs/Cents" },
+        "barcode": { "type": ["string", "null"] },
+        "deleted": { "type": "boolean" },
+        "updated_at": { "$ref": "#/$defs/Timestamp" },
+        "seq": { "$ref": "#/$defs/Seq" }
+      }
+    },
+    "EmbeddingRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "product_id", "vector_b64", "dim", "model_version", "deleted", "created_at", "seq"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "product_id": { "$ref": "#/$defs/Uuid" },
+        "vector_b64": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "L2-normalised little-endian float32 vector, `dim` values."
+        },
+        "dim": { "type": "integer", "minimum": 1 },
+        "model_version": { "type": "string", "minLength": 1 },
+        "deleted": { "type": "boolean" },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "seq": { "$ref": "#/$defs/Seq" }
+      }
+    },
+    "SaleItemRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "product_id", "qty", "unit_price_cents", "match_score", "match_method"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "product_id": { "$ref": "#/$defs/Uuid" },
+        "qty": { "type": "integer", "minimum": 1 },
+        "unit_price_cents": { "$ref": "#/$defs/Cents" },
+        "match_score": { "type": ["number", "null"], "minimum": -1, "maximum": 1 },
+        "match_method": { "$ref": "#/$defs/MatchMethod" }
+      }
+    },
+    "SaleRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "device_id", "total_cents", "items", "deleted", "created_at", "seq"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "device_id": { "$ref": "#/$defs/Uuid" },
+        "total_cents": { "$ref": "#/$defs/Cents" },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/SaleItemRecord" }
+        },
+        "deleted": { "type": "boolean" },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "seq": { "$ref": "#/$defs/Seq" }
+      }
+    },
+    "PullChanges": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["products", "embeddings", "sales"],
+      "properties": {
+        "products": { "type": "array", "items": { "$ref": "#/$defs/ProductRecord" } },
+        "embeddings": { "type": "array", "items": { "$ref": "#/$defs/EmbeddingRecord" } },
+        "sales": { "type": "array", "items": { "$ref": "#/$defs/SaleRecord" } }
+      }
+    },
+    "PullResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["changes", "next_cursor", "has_more"],
+      "properties": {
+        "changes": { "$ref": "#/$defs/PullChanges" },
+        "next_cursor": {
+          "type": "string",
+          "description": "Opaque; pass back as ?cursor= on the next pull. Encodes the last seq returned."
+        },
+        "has_more": { "type": "boolean" }
+      }
+    }
+  }
+}
