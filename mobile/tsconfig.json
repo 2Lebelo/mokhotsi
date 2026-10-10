@@ -5,12 +5,12 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "resolveJsonModule": true,
-    "types": ["jest"],
+    "types": [],
     "paths": {
       "@/*": ["./src/*"],
       "@contracts/*": ["../contracts/*"]
     }
   },
   "include": ["**/*.ts", "**/*.tsx", "src/types/*.d.ts"],
-  "exclude": ["node_modules", "android", "ios"]
+  "exclude": ["node_modules", "android", "ios", "__tests__", "jest.setup.ts"]
 }

@@ -26,6 +26,27 @@ function assetFor(file: string): number {
 }
 
 /**
+ * Load the detector on its own (stage 1 works before the embedder exists). Tries each delegate list in
+ * order, e.g. [['android-gpu'], []] = GPU, then CPU when the delegate cannot load the model on this device.
+ * Throws ModelsUnavailableError when detector.tflite is not bundled.
+ */
+export async function loadDetector(
+  manifest: ModelManifest,
+  delegateChain: readonly TensorflowModelDelegate[][],
+): Promise<TfliteModel> {
+  const asset = assetFor(manifest.detector.file);
+  let lastError: unknown = new Error('loadDetector: empty delegate chain');
+  for (const delegates of delegateChain) {
+    try {
+      return await loadTensorflowModel(asset, delegates);
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw lastError;
+}
+
+/**
  * Load both models. Throws ModelsUnavailableError (never crashes the app) when a .tflite file
  * listed in the manifest is missing from assets/models/.
  */

@@ -24,35 +24,91 @@ export class NetworkError extends AppError {
   }
 }
 
+/** The refresh token was refused: the user has to sign in again. */
+export function isSessionExpired(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
+// --- Wire types for /api/v1/tokens, /users/me/password and /shops (api/app/schemas/). ---
+
+export interface TokenUser {
+  id: string;
+  email: string;
+  name: string;
+  role: 'system_admin' | 'shop_keeper' | 'shop_sitter';
+  must_change_password: boolean;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: 'bearer';
+  expires_in: number;
+  session_id: string;
+  user: TokenUser;
+}
+
+export interface ShopSummary {
+  id: string;
+  name: string;
+  status: 'active' | 'archived';
+  my_role: 'keeper' | 'sitter' | null;
+  my_permissions: string[] | null;
+}
+
+interface Page<T> {
+  data: T[];
+  page: { next_cursor: string | null; limit: number };
+}
+
+/** How the client gets and renews the access token (implemented by the session store). */
+export interface AuthHooks {
+  getAccessToken(): string | null;
+  /** Renew the access token; resolves null when the session is gone (sign in again). */
+  refresh(): Promise<string | null>;
+}
+
 export interface ApiClientOptions {
   baseUrl: string;
-  /** Returns the current access token, or null when signed out. */
-  getAccessToken: () => Promise<string | null>;
+  auth?: AuthHooks;
   timeoutMs?: number;
+  /** Injected in tests; defaults to the global fetch. */
+  fetchImpl?: typeof fetch;
+}
+
+type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
+
+export interface RequestOptions {
+  /** Send the access token and refresh it once on 401 (default true). */
+  auth?: boolean;
 }
 
 export interface ApiClient {
-  request<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T>;
-  push(body: PushRequest): Promise<PushResponse>;
-  pull(cursor: string | null, limit: number): Promise<PullResponse>;
+  request<T>(method: Method, path: string, body?: unknown, options?: RequestOptions): Promise<T>;
+  login(email: string, password: string, deviceId: string): Promise<TokenResponse>;
+  refreshTokens(refreshToken: string): Promise<TokenResponse>;
+  changePassword(currentPassword: string, newPassword: string): Promise<void>;
+  revokeCurrentSession(): Promise<void>;
+  listShops(): Promise<ShopSummary[]>;
+  push(shopId: string, body: PushRequest): Promise<PushResponse>;
+  pull(shopId: string, cursor: string | null, limit: number): Promise<PullResponse>;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+const V1 = '/api/v1';
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const fetchImpl = options.fetchImpl ?? fetch;
 
-  async function request<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+  async function send(method: Method, path: string, body: unknown, token: string | null): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const token = await options.getAccessToken();
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (token) headers.Authorization = `Bearer ${token}`;
-    // TODO(feature): on 401, call POST /auth/refresh once and retry with the new access token.
-    let response: Response;
     try {
-      response = await fetch(`${options.baseUrl}${path}`, {
+      return await fetchImpl(`${options.baseUrl}${path}`, {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -63,19 +119,67 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async function request<T>(method: Method, path: string, body?: unknown, opts?: RequestOptions): Promise<T> {
+    const useAuth = (opts?.auth ?? true) && options.auth !== undefined;
+    let response = await send(method, path, body, useAuth ? options.auth!.getAccessToken() : null);
+    if (response.status === 401 && useAuth) {
+      // Access tokens live 15 minutes: renew once and retry. refresh() is single-flight.
+      const renewed = await options.auth!.refresh();
+      if (renewed) response = await send(method, path, body, renewed);
+    }
     const text = await response.text();
-    const json: unknown = text.length > 0 ? JSON.parse(text) : undefined;
-    if (!response.ok) throw new ApiError(response.status, json as ApiErrorBody | undefined);
+    let json: unknown;
+    try {
+      json = text.length > 0 ? JSON.parse(text) : undefined;
+    } catch {
+      json = undefined;
+    }
+    if (!response.ok) {
+      const errorBody = isErrorBody(json) ? json : undefined;
+      throw new ApiError(response.status, errorBody);
+    }
     return json as T;
   }
 
   return {
     request,
-    push: (body) => request<PushResponse>('POST', '/sync/push', body),
-    pull: (cursor, limit) => {
+    login: (email, password, deviceId) =>
+      request<TokenResponse>(
+        'POST',
+        `${V1}/tokens`,
+        { grant_type: 'password', email, password, device_id: deviceId },
+        { auth: false },
+      ),
+    refreshTokens: (refreshToken) =>
+      request<TokenResponse>(
+        'POST',
+        `${V1}/tokens`,
+        { grant_type: 'refresh_token', refresh_token: refreshToken },
+        { auth: false },
+      ),
+    changePassword: (currentPassword, newPassword) =>
+      request<void>('PUT', `${V1}/users/me/password`, {
+        current_password: currentPassword,
+        new_password: newPassword,
+      }),
+    revokeCurrentSession: () => request<void>('DELETE', `${V1}/sessions/current`),
+    listShops: async () => {
+      const page = await request<Page<ShopSummary>>('GET', `${V1}/shops?limit=100`);
+      return page.data;
+    },
+    push: (shopId, body) => request<PushResponse>('POST', `${V1}/shops/${shopId}/sync/push`, body),
+    pull: (shopId, cursor, limit) => {
       const query = new URLSearchParams({ limit: String(limit) });
       if (cursor !== null) query.set('cursor', cursor);
-      return request<PullResponse>('GET', `/sync/pull?${query.toString()}`);
+      return request<PullResponse>('GET', `${V1}/shops/${shopId}/sync/pull?${query.toString()}`);
     },
   };
+}
+
+function isErrorBody(value: unknown): value is ApiErrorBody {
+  if (typeof value !== 'object' || value === null || !('error' in value)) return false;
+  const error = (value as { error: unknown }).error;
+  return typeof error === 'object' && error !== null && 'code' in error && 'message' in error;
 }

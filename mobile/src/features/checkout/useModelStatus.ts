@@ -5,7 +5,14 @@ import { missingModelFiles } from '@/ml/models';
 
 export type ModelStatus =
   | { state: 'ready'; manifest: ModelManifest }
-  | { state: 'missing'; manifest: ModelManifest; missing: string[]; message: string }
+  | {
+      state: 'missing';
+      manifest: ModelManifest;
+      missing: string[];
+      /** True when only the embedder is missing: stage 1 (detection) can still run. */
+      detectorAvailable: boolean;
+      message: string;
+    }
   | { state: 'invalid'; message: string };
 
 /** Manifest and bundled files are fixed at build time, so compute once per launch. */
@@ -22,6 +29,7 @@ function computeModelStatus(): ModelStatus {
       state: 'missing',
       manifest,
       missing,
+      detectorAvailable: !missing.includes(manifest.detector.file),
       message:
         `Product recognition is unavailable: ${missing.join(', ')} not found in assets/models. ` +
         'Add the exported .tflite files, run `npm run models:sync` and rebuild.',

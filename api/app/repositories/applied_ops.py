@@ -4,8 +4,8 @@ from uuid import UUID
 
 from pymongo import ASCENDING, IndexModel
 
-from app.core.db import Database
-from app.core.errors import NotImplementedFeature
+from app.core.clock import utcnow
+from app.core.db import Database, Session
 
 COLLECTION = "applied_ops"
 TTL_SECONDS = 30 * 24 * 60 * 60
@@ -14,11 +14,26 @@ INDEXES = [
 ]
 
 
-async def already_applied(db: Database, op_ids: list[UUID]) -> set[UUID]:
-    # TODO(feature): find({_id: {$in: op_ids}}, projection {_id: 1}) → set of ids.
-    raise NotImplementedFeature("applied_ops.already_applied")
+async def owners(
+    db: Database, op_ids: list[UUID], session: Session | None = None
+) -> dict[UUID, UUID]:
+    """{op_id: shop_id} for the op_ids already applied (by any shop)."""
+    if not op_ids:
+        return {}
+    cursor = db[COLLECTION].find(
+        {"_id": {"$in": op_ids}}, projection={"shop_id": 1}, session=session
+    )
+    return {doc["_id"]: doc["shop_id"] async for doc in cursor}
 
 
-async def record(db: Database, shop_id: UUID, op_ids: list[UUID]) -> None:
-    # TODO(feature): insert_many([{_id, shop_id, applied_at: now}], ordered=False); ignore duplicate keys.
-    raise NotImplementedFeature("applied_ops.record")
+async def record(
+    db: Database, shop_id: UUID, op_ids: list[UUID], session: Session | None = None
+) -> None:
+    """Call in the same transaction as the writes, after checking `owners` in that transaction."""
+    if not op_ids:
+        return
+    now = utcnow()
+    await db[COLLECTION].insert_many(
+        [{"_id": op_id, "shop_id": shop_id, "applied_at": now} for op_id in op_ids],
+        session=session,
+    )

@@ -110,8 +110,14 @@ export const outbox = sqliteTable(
     payload: text('payload').notNull(),
     createdAt: integer('created_at').notNull(),
     attempts: integer('attempts').notNull().default(0),
+    /**
+     * Set when the server rejected the op (`<code>: <message>`). Rejected rows stay out of
+     * push batches and are listed under "needs attention" until retried or discarded.
+     */
+    rejectedReason: text('rejected_reason'),
+    rejectedAt: integer('rejected_at'),
   },
-  (t) => [index('outbox_created_idx').on(t.createdAt)],
+  (t) => [index('outbox_created_idx').on(t.createdAt), index('outbox_entity_idx').on(t.entity, t.entityId)],
 );
 
 /** Small key/value store: pull cursor, device id, last sync time, … */

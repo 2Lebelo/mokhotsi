@@ -1,7 +1,14 @@
+import { and, asc, eq } from 'drizzle-orm';
+
 import type { Uuid } from '@/lib/ids';
-import type { Cents } from '@/lib/money';
-import { notImplemented } from '@/lib/errors';
-import type { Product, ProductImage } from '@/db/schema';
+import { newId } from '@/lib/ids';
+import { assertCents, type Cents } from '@/lib/money';
+import { msToIso } from '@/lib/time';
+import { db } from '@/db/client';
+import { notifyChanged } from '@/db/changes';
+import { productImages, products, type Product, type ProductImage } from '@/db/schema';
+
+import { enqueue } from './outbox';
 
 export interface UpsertProductInput {
   /** Omit to create a new product (a UUID is generated). */
@@ -12,42 +19,96 @@ export interface UpsertProductInput {
   barcode: string | null;
 }
 
+/** Wire payload for `products/upsert` (contracts ProductRecord without `seq`). */
+export function productPayload(p: Product): Record<string, unknown> {
+  return {
+    id: p.id,
+    name: p.name,
+    price_cents: p.priceCents,
+    barcode: p.barcode,
+    deleted: p.deleted,
+    updated_at: msToIso(p.updatedAt),
+  };
+}
+
 /**
  * Create or update a product AND enqueue a `products/upsert` outbox op in one transaction.
  */
 export function upsertProduct(input: UpsertProductInput): Product {
-  // TODO(feature): db.transaction((tx) => { tx.insert(products)…onConflictDoUpdate…run(); enqueue(tx, …) }).
-  return notImplemented('products.upsertProduct');
+  const name = input.name.trim();
+  if (name.length === 0) throw new TypeError('product name is required');
+  assertCents(input.priceCents, 'price');
+  if (input.priceCents < 0) throw new TypeError('price cannot be negative');
+  const product: Product = {
+    id: input.id ?? newId(),
+    shopId: input.shopId,
+    name,
+    priceCents: input.priceCents,
+    barcode: input.barcode?.trim() || null,
+    updatedAt: Date.now(),
+    deleted: false,
+  };
+  db.transaction((tx) => {
+    tx.insert(products)
+      .values(product)
+      .onConflictDoUpdate({
+        target: products.id,
+        set: {
+          name: product.name,
+          priceCents: product.priceCents,
+          barcode: product.barcode,
+          updatedAt: product.updatedAt,
+          deleted: false,
+        },
+      })
+      .run();
+    enqueue(tx, { entity: 'products', entityId: product.id, op: 'upsert', payload: productPayload(product) });
+  });
+  notifyChanged('products', 'outbox');
+  return product;
 }
 
 /** Soft-delete (deleted = true) AND enqueue a `products/upsert` op carrying deleted: true. */
 export function softDeleteProduct(id: Uuid): void {
-  // TODO(feature): one transaction: update products set deleted = 1, updated_at = now; enqueue(tx, …).
-  return notImplemented('products.softDeleteProduct');
+  const existing = getProduct(id);
+  if (!existing || existing.deleted) return;
+  const deleted: Product = { ...existing, deleted: true, updatedAt: Date.now() };
+  db.transaction((tx) => {
+    tx.update(products).set({ deleted: true, updatedAt: deleted.updatedAt }).where(eq(products.id, id)).run();
+    enqueue(tx, { entity: 'products', entityId: id, op: 'upsert', payload: productPayload(deleted) });
+  });
+  notifyChanged('products', 'outbox');
 }
 
 export function listProducts(shopId: Uuid): Product[] {
-  // TODO(feature): select where shop_id = ? and deleted = 0 order by name.
-  return notImplemented('products.listProducts');
+  return db
+    .select()
+    .from(products)
+    .where(and(eq(products.shopId, shopId), eq(products.deleted, false)))
+    .orderBy(asc(products.name))
+    .all();
 }
 
 export function getProduct(id: Uuid): Product | undefined {
-  // TODO(feature): select by primary key.
-  return notImplemented('products.getProduct');
+  return db.select().from(products).where(eq(products.id, id)).get();
 }
 
 export function findByBarcode(shopId: Uuid, barcode: string): Product | undefined {
-  // TODO(feature): select where shop_id = ? and barcode = ? (uses products_shop_barcode_idx).
-  return notImplemented('products.findByBarcode');
+  return db
+    .select()
+    .from(products)
+    .where(and(eq(products.shopId, shopId), eq(products.barcode, barcode), eq(products.deleted, false)))
+    .get();
 }
 
 /** Enrolment photos stay on the device; they are not synced (not a sync entity). */
 export function addProductImage(productId: Uuid, localUri: string): ProductImage {
-  // TODO(feature): insert into product_images.
-  return notImplemented('products.addProductImage');
+  const image: ProductImage = { id: newId(), productId, localUri };
+  db.insert(productImages).values(image).run();
+  notifyChanged('product_images');
+  return image;
 }
 
 export function listProductImages(productId: Uuid): ProductImage[] {
-  // TODO(feature): select from product_images where product_id = ?.
-  return notImplemented('products.listProductImages');
+  return db.select().from(productImages).where(eq(productImages.productId, productId)).all();
 }

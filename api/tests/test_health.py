@@ -10,44 +10,30 @@ from app.repositories.indexes import ALL_INDEXES
 def test_health_reports_mongo_ok(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "mongo": "ok"}
+    assert response.json() == {"status": "ok", "mongo": "ok", "redis": "disabled"}
 
 
 @pytest.mark.requires_mongo
-def test_lifespan_created_indexes(client: TestClient, settings: Settings) -> None:
-    from pymongo import MongoClient
-
-    with MongoClient(settings.mongo_uri) as mongo:
-        db = mongo[settings.mongo_db]
-        for collection, indexes in ALL_INDEXES.items():
-            existing = set(db[collection].index_information())
-            for index in indexes:
-                assert index.document["name"] in existing, (collection, index.document["name"])
-        ttl = db["applied_ops"].index_information()["applied_at_ttl"]
-        assert ttl["expireAfterSeconds"] == 30 * 24 * 60 * 60
+def test_lifespan_created_indexes(client: TestClient, mongo) -> None:
+    for collection, indexes in ALL_INDEXES.items():
+        existing = set(mongo[collection].index_information())
+        for index in indexes:
+            assert index.document["name"] in existing, (collection, index.document["name"])
+    ttl = mongo["applied_ops"].index_information()["applied_at_ttl"]
+    assert ttl["expireAfterSeconds"] == 30 * 24 * 60 * 60
+    assert mongo["sessions"].index_information()["expires_at_ttl"]["expireAfterSeconds"] == 0
 
 
 @pytest.mark.requires_mongo
-@pytest.mark.parametrize(
-    ("method", "path", "body"),
-    [
-        ("post", "/auth/refresh", {"refresh_token": "x"}),
-        ("get", "/sync/pull", None),
-    ],
-)
-def test_stubs_return_501_in_the_error_shape(
-    client: TestClient, method: str, path: str, body: dict[str, str] | None
-) -> None:
-    response = client.request(method, path, json=body)
-    assert response.status_code == 501
-    error = response.json()["error"]
-    assert error["code"] == "not_implemented"
-    assert error["message"].startswith("TODO(feature):")
+def test_legacy_shop_phone_index_is_dropped(make_client, mongo, settings: Settings) -> None:
+    mongo["shops"].create_index("owner_phone", name="owner_phone_unique", unique=True)
+    with TestClient(create_app(settings)):
+        assert "owner_phone_unique" not in mongo["shops"].index_information()
 
 
 @pytest.mark.requires_mongo
 def test_validation_errors_use_the_error_shape(client: TestClient) -> None:
-    response = client.post("/auth/login", json={"owner_phone": "x"})
+    response = client.post("/api/v1/tokens", json={"grant_type": "password", "email": "x"})
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
 
@@ -56,13 +42,31 @@ def test_openapi_documents_every_endpoint(settings: Settings) -> None:
     paths = create_app(settings).openapi()["paths"]
     assert set(paths) == {
         "/health",
-        "/auth/register",
-        "/auth/login",
-        "/auth/refresh",
-        "/sync/push",
-        "/sync/pull",
+        "/api/v1/tokens",
+        "/api/v1/sessions",
+        "/api/v1/sessions/current",
+        "/api/v1/sessions/{session_id}",
+        "/api/v1/users",
+        "/api/v1/users/me",
+        "/api/v1/users/me/password",
+        "/api/v1/users/{user_id}",
+        "/api/v1/users/{user_id}/password-resets",
+        "/api/v1/roles",
+        "/api/v1/permissions",
+        "/api/v1/shops",
+        "/api/v1/shops/{shop_id}",
+        "/api/v1/shops/{shop_id}/members",
+        "/api/v1/shops/{shop_id}/members/{user_id}",
+        "/api/v1/shops/{shop_id}/members/{user_id}/password-resets",
+        "/api/v1/audit-logs",
+        "/api/v1/shops/{shop_id}/audit-logs",
+        "/api/v1/shops/{shop_id}/sync/push",
+        "/api/v1/shops/{shop_id}/sync/pull",
     }
-    assert "501" in paths["/sync/push"]["post"]["responses"]
+    create_user = paths["/api/v1/users"]["post"]
+    assert create_user["x-idempotency-key"] == "optional"
+    assert any(p["name"] == "Idempotency-Key" for p in create_user["parameters"])
+    assert "409" in create_user["responses"]
 
 
 def test_cors_is_off_by_default(settings: Settings) -> None:

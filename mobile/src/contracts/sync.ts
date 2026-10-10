@@ -92,7 +92,10 @@ export interface PullChanges {
 
 export interface PullResponse {
   changes: PullChanges;
-  /** Opaque; send back as ?cursor= on the next pull. */
+  /**
+   * Decimal string of the last seq returned. Send back as ?cursor=; a smaller value is allowed
+   * (the client re-reads an overlap of PULL_OVERLAP).
+   */
   next_cursor: string;
   has_more: boolean;
 }

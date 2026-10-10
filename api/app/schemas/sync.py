@@ -86,8 +86,52 @@ class PullChanges(StrictModel):
 
 class PullResponse(StrictModel):
     changes: PullChanges
-    next_cursor: str = Field(description="Opaque; send back as ?cursor= on the next pull")
+    next_cursor: str = Field(
+        pattern=r"^[0-9]+$",
+        description=(
+            "Decimal string of the last seq returned. Send it back as ?cursor=; a smaller value "
+            "is allowed (clients re-read an overlap of 50)."
+        ),
+    )
     has_more: bool
+
+
+# --- Push payloads: "the record without `seq`" (contract Op.payload), validated per entity. ---
+
+
+class ProductPayload(StrictModel):
+    id: UUID
+    name: Annotated[str, Field(min_length=1, max_length=200)]
+    price_cents: Cents
+    barcode: Annotated[str, Field(max_length=64)] | None
+    deleted: bool
+    updated_at: AwareDatetime
+
+
+class EmbeddingPayload(StrictModel):
+    id: UUID
+    product_id: UUID
+    vector_b64: Annotated[str, Field(min_length=4, max_length=65_536)]
+    dim: Annotated[int, Field(ge=1, le=4096, strict=True)]
+    model_version: Annotated[str, Field(min_length=1, max_length=120)]
+    deleted: bool
+    created_at: AwareDatetime
+
+
+class SalePayload(StrictModel):
+    id: UUID
+    device_id: UUID
+    total_cents: Cents
+    items: Annotated[list[SaleItemRecord], Field(min_length=1, max_length=500)]
+    deleted: bool
+    created_at: AwareDatetime
+
+
+PAYLOAD_MODELS: dict[str, type[StrictModel]] = {
+    "products": ProductPayload,
+    "embeddings": EmbeddingPayload,
+    "sales": SalePayload,
+}
 
 
 # Model per $defs entry, used by the contract test.

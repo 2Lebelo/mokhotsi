@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@types/jest": "29.5.14",
+    "@types/node": "^24.19.1",
     "@types/react": "~19.2.2",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
@@ -50,7 +51,7 @@
     "start": "npm run models:sync && expo start --dev-client",
     "android": "npm run models:sync && expo run:android",
     "native:prebuild": "expo prebuild --clean",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "lint": "expo lint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

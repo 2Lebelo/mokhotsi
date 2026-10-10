@@ -10,8 +10,13 @@ export interface ModelSpec {
   /** File name inside mobile/assets/models/. */
   file: string;
   arch: string;
-  /** Height, width, channels. */
+  /** Height, width, channels (independent of `layout`). */
   input: TensorShape;
+  /**
+   * Input tensor layout: 'nhwc' = [1, H, W, C], 'nchw' = [1, C, H, W]. Ultralytics' LiteRT export keeps
+   * PyTorch's NCHW; Keras exports are NHWC. Drives the resizer's pixelLayout, so a wrong value gives garbage.
+   */
+  layout: 'nhwc' | 'nchw';
   dtype: 'float32' | 'uint8' | 'int8';
   /** Value range the model expects after preprocessing, e.g. [0, 1] or [-1, 1]. */
   input_range: readonly [number, number];
@@ -27,7 +32,7 @@ export interface EmbedderSpec extends ModelSpec {
 }
 
 export interface ModelManifest {
-  schema_version: 1;
+  schema_version: 2;
   detector: DetectorSpec;
   embedder: EmbedderSpec;
   /** Minimum cosine similarity to accept a match (placeholder until eval_matching.py tunes it). */
@@ -79,12 +84,15 @@ function modelSpec(raw: unknown, path: string): ModelSpec {
   if (dtype !== 'float32' && dtype !== 'uint8' && dtype !== 'int8') {
     throw new ManifestError(`${path}.dtype must be float32, uint8 or int8`);
   }
+  const layout = raw.layout;
+  if (layout !== 'nhwc' && layout !== 'nchw') throw new ManifestError(`${path}.layout must be nhwc or nchw`);
   const [lo, hi] = tuple(raw, 'input_range', path, 2) as [number, number];
   if (!(lo < hi)) throw new ManifestError(`${path}.input_range must be [low, high] with low < high`);
   return {
     file,
     arch: str(raw, 'arch', path),
     input: [h, w, c],
+    layout,
     dtype,
     input_range: [lo, hi],
     model_version: str(raw, 'model_version', path),
@@ -94,7 +102,7 @@ function modelSpec(raw: unknown, path: string): ModelSpec {
 /** Validate untrusted JSON. Throws ManifestError naming the first bad field. */
 export function parseManifest(raw: unknown): ModelManifest {
   if (!isObj(raw)) throw new ManifestError('root must be an object');
-  if (raw.schema_version !== 1) throw new ManifestError('schema_version must be 1');
+  if (raw.schema_version !== 2) throw new ManifestError('schema_version must be 2');
   if (!isObj(raw.detector)) throw new ManifestError('detector must be an object');
   if (!isObj(raw.embedder)) throw new ManifestError('embedder must be an object');
   const detector: DetectorSpec = {
@@ -107,7 +115,7 @@ export function parseManifest(raw: unknown): ModelManifest {
   };
   if (!Number.isInteger(embedder.dim)) throw new ManifestError('embedder.dim must be an integer');
   return {
-    schema_version: 1,
+    schema_version: 2,
     detector,
     embedder,
     match_threshold: num(raw, 'match_threshold', 'root', -1, 1),
