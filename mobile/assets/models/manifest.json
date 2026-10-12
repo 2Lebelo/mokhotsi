@@ -18,7 +18,7 @@
     "dtype": "float32",
     "input_range": [-1, 1],
     "dim": 1280,
-    "model_version": "mobilenet_v2-224-1280@placeholder"
+    "model_version": "mobilenet_v2-224-1280@2026-10-10"
   },
   "match_threshold": 0.75
 }
