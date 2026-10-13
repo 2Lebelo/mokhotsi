@@ -41,6 +41,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-status-bar',
     'expo-sqlite',
     'expo-secure-store',
+    ['expo-build-properties', { android: { minSdkVersion: 26 } }],
     ['react-native-fast-tflite', { enableAndroidGpuLibraries: true }],
   ],
   extra: {
