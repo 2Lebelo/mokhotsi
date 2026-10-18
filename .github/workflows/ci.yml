@@ -64,7 +64,7 @@ jobs:
       - run: uv run pytest
 
   mobile:
-    name: mobile (tsc + eslint + prettier + jest)
+    name: mobile (TypeScript + ESLint + SQLite)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -78,11 +78,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: mobile/package-lock.json
-      - run: npm ci # postinstall regenerates src/ml/modelAssets.generated.ts
-      - run: npm run typecheck # app (no Node types) + tests (Node types)
-      - run: npx expo lint
-      - run: npm run format:check
-      - run: npx jest --ci
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
 
   ml:
     name: ml (ruff)

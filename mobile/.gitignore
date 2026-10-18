@@ -36,10 +36,11 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+example
+
 # generated native folders
 /ios
 /android
 
-# Mokhotsi
-.env
-src/ml/modelAssets.generated.ts
+# Local device verification captures and bundles
+/verification/
