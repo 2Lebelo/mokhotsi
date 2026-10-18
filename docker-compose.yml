@@ -1,23 +1,54 @@
-# Local development: MongoDB + the API.
+# Local development: MongoDB (single-node replica set) + Redis + the API.
 #   docker compose up --build        → API on http://localhost:8000 (docs at /docs)
-# Needs api/.env (copy api/.env.example). MONGO_URI is overridden below for the container network.
-# If a local MongoDB already uses port 27017, set MONGO_HOST_PORT=27018 (env or root .env file).
+#   docker compose up -d mongo redis → just the services, for `uv run` / pytest on the host
+# Needs api/.env (copy api/.env.example). MONGO_URI/REDIS_URL are overridden below for the
+# container network. If a local MongoDB already uses port 27017, set MONGO_HOST_PORT=27018.
+#
+# Why a replica set: the API writes a change and its audit entry in one transaction, and
+# MongoDB only supports transactions on replica sets. The member is registered as
+# localhost:<MONGO_HOST_PORT>, so host tools connect with a plain mongodb://localhost:<port>
+# URI and the API container connects directly (directConnection=true).
 name: mokhotsi
 
 services:
   mongo:
     image: mongo:8
     restart: unless-stopped
+    # Listens on the same port it publishes, so the member address is valid inside and outside.
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "${MONGO_HOST_PORT:-27017}"]
     ports:
-      - "127.0.0.1:${MONGO_HOST_PORT:-27017}:27017"
+      - "127.0.0.1:${MONGO_HOST_PORT:-27017}:${MONGO_HOST_PORT:-27017}"
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      # Initiates the replica set on first start, then reports healthy once it has a primary.
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --port
+        - "${MONGO_HOST_PORT:-27017}"
+        - --eval
+        - >-
+          try { rs.status().ok } catch (e) {
+            rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:${MONGO_HOST_PORT:-27017}' }] }).ok
+          }; db.hello().isWritablePrimary ? 1 : quit(1)
       interval: 5s
-      timeout: 5s
-      retries: 20
+      timeout: 10s
+      retries: 30
       start_period: 10s
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"] # Rate-limit state only.
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   api:
     build: ./api
@@ -26,11 +57,14 @@ services:
       - path: ./api/.env
         required: true
     environment:
-      MONGO_URI: mongodb://mongo:27017
+      MONGO_URI: mongodb://mongo:${MONGO_HOST_PORT:-27017}/?directConnection=true
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "${API_HOST_PORT:-8000}:8000"
     depends_on:
       mongo:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

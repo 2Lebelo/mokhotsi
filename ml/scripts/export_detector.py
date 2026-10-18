@@ -74,7 +74,8 @@ def main() -> None:
         return
     # TODO(feature): YOLO(args.weights).export(format=api.format, imgsz=args.imgsz, <quantisation per api>,
     # data=args.data) -> copy to out-dir/detector.tflite -> update manifest via _manifest.build_manifest
-    # (arch "yolov8n", input [imgsz, imgsz, 3], input_range [0, 1], score_threshold 0.25).
+    # (arch "yolov8n", input [imgsz, imgsz, 3], layout "nchw" (LiteRT keeps PyTorch NCHW), input_range [0, 1],
+    # score_threshold 0.25). LiteRT export only runs on Linux x86 / macOS (Ultralytics asserts), e.g. Colab.
     raise NotImplementedError("TODO(feature): export_detector.py export step")
 
 

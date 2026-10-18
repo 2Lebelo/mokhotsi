@@ -1,36 +1,56 @@
-"""Auth request/response models (not part of the sync contract)."""
+"""Token (login/refresh) and session models."""
 
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
-from app.schemas.common import StrictModel
-
-Phone = Annotated[str, Field(min_length=6, max_length=20, pattern=r"^\+?[0-9]+$")]
-Password = Annotated[str, Field(min_length=8, max_length=128)]
+from app.core.permissions import Role
+from app.schemas.common import Email, StrictModel
 
 
-class RegisterRequest(StrictModel):
-    shop_name: Annotated[str, Field(min_length=1, max_length=120)]
-    owner_phone: Phone
-    password: Password
-    device_id: UUID
+class PasswordGrant(StrictModel):
+    grant_type: Literal["password"]
+    email: Email
+    password: Annotated[str, Field(min_length=1, max_length=128)]
+    device_id: UUID | None = Field(
+        default=None, description="Stable id of the signing-in device (client-generated)"
+    )
 
 
-class LoginRequest(StrictModel):
-    owner_phone: Phone
-    password: Password
-    device_id: UUID
+class RefreshTokenGrant(StrictModel):
+    grant_type: Literal["refresh_token"]
+    refresh_token: Annotated[str, Field(min_length=1, max_length=512)]
 
 
-class RefreshRequest(StrictModel):
-    refresh_token: str
+TokenRequest = Annotated[PasswordGrant | RefreshTokenGrant, Field(discriminator="grant_type")]
 
 
-class TokenResponse(StrictModel):
+class TokenUser(BaseModel):
+    id: UUID
+    email: str
+    name: str
+    role: Role
+    must_change_password: bool
+
+
+class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: str
+    refresh_token: str = Field(description="Single use: every refresh returns a new one")
     token_type: Literal["bearer"] = "bearer"  # noqa: S105 — OAuth2 token type, not a secret
     expires_in: int = Field(description="Access-token lifetime in seconds")
-    shop_id: UUID
+    session_id: UUID
+    user: TokenUser
+
+
+class SessionOut(BaseModel):
+    id: UUID
+    device_id: UUID | None
+    current: bool
+    created_at: datetime
+    last_used_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None
+    ip: str | None
+    user_agent: str | None

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:mokhotsi:contracts:sync",
   "title": "Mokhotsi sync contract",
-  "description": "Wire format between the phone and the API. Mirrored by api/app/schemas/sync.py (Pydantic) and mobile/src/contracts/sync.ts (TypeScript); both test suites validate contracts/examples/*.json against this file. Limits: push ops <= 200 per request; GET /sync/pull?cursor=&limit= with 1 <= limit <= 500. Ordering is by the server-assigned per-shop `seq`, never a device clock. Money is integer cents. Ids are client-generated UUID v4.",
+  "description": "Wire format between the phone and the API. Mirrored by api/app/schemas/sync.py (Pydantic) and mobile/src/contracts/sync.ts (TypeScript); both test suites validate contracts/examples/*.json against this file. Endpoints: POST /api/v1/shops/{shop_id}/sync/push and GET /api/v1/shops/{shop_id}/sync/pull?cursor=&limit=; the shop comes from the path and the caller's membership, never from a payload. Limits: push ops <= 200 per request; 1 <= limit <= 500. Ordering is by the server-assigned per-shop `seq`, never a device clock. Money is integer cents. Ids are client-generated UUID v4.",
   "$defs": {
     "Uuid": {
       "type": "string",
@@ -172,7 +172,8 @@
         "changes": { "$ref": "#/$defs/PullChanges" },
         "next_cursor": {
           "type": "string",
-          "description": "Opaque; pass back as ?cursor= on the next pull. Encodes the last seq returned."
+          "pattern": "^[0-9]+$",
+          "description": "Decimal string of the last seq returned (the request cursor when the page is empty). Pass it back as ?cursor=; clients may send a smaller value to re-read an overlap."
         },
         "has_more": { "type": "boolean" }
       }

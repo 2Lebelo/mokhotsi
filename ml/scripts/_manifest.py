@@ -8,9 +8,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 Dtype = Literal["float32", "uint8", "int8"]
+Layout = Literal["nhwc", "nchw"]
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class DetectorEntry:
     file: str
     arch: str
     input: tuple[int, int, int]  # height, width, channels
+    layout: Layout  # Ultralytics LiteRT export: "nchw"
     dtype: Dtype
     input_range: tuple[float, float]
     score_threshold: float
@@ -29,6 +31,7 @@ class EmbedderEntry:
     file: str
     arch: str
     input: tuple[int, int, int]
+    layout: Layout  # Keras export: "nhwc"
     dtype: Dtype
     input_range: tuple[float, float]
     dim: int
@@ -40,6 +43,8 @@ def _check(entry: DetectorEntry | EmbedderEntry, name: str) -> None:
         raise ValueError(f"{name}.file must end with .tflite")
     if len(entry.input) != 3 or any(n <= 0 for n in entry.input):
         raise ValueError(f"{name}.input must be three positive ints")
+    if entry.layout not in ("nhwc", "nchw"):
+        raise ValueError(f"{name}.layout must be nhwc or nchw")
     if not entry.input_range[0] < entry.input_range[1]:
         raise ValueError(f"{name}.input_range must be [low, high]")
 

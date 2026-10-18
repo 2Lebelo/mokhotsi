@@ -20,21 +20,38 @@ jobs:
       run:
         working-directory: api
     services:
-      mongo:
-        image: mongo:8
+      redis:
+        image: redis:8-alpine
         ports:
-          - 27017:27017
+          - 6379:6379
         options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-cmd "redis-cli ping"
           --health-interval 5s
-          --health-timeout 5s
+          --health-timeout 3s
           --health-retries 20
     env:
       MONGO_URI: mongodb://localhost:27017
       MONGO_DB_TEST: mokhotsi_ci
+      REDIS_URL_TEST: redis://localhost:6379/15
       JWT_SECRET: ci-only-secret-not-used-anywhere-else-000000
     steps:
       - uses: actions/checkout@v7
+      # Service containers cannot take arguments, and transactions need a replica set, so
+      # MongoDB is started here as a single-node replica set (same as docker-compose.yml).
+      - name: Start MongoDB replica set
+        working-directory: .
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:8 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval "db.adminCommand('ping').ok" && break
+            sleep 2
+          done
+          docker exec mongo mongosh --quiet --eval \
+            "rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]})"
+          for i in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval "db.hello().isWritablePrimary" | grep -q true && break
+            sleep 2
+          done
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           version: "0.12.23"
@@ -43,11 +60,11 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      # `CI=true` (set by GitHub) makes tests marked requires_mongo fail instead of skip.
+      # `CI=true` (set by GitHub) makes Mongo/Redis-dependent tests fail instead of skip.
       - run: uv run pytest
 
   mobile:
-    name: mobile (tsc + eslint + prettier + jest)
+    name: mobile (TypeScript + ESLint + SQLite)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -61,11 +78,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: mobile/package-lock.json
-      - run: npm ci # postinstall regenerates src/ml/modelAssets.generated.ts
-      - run: npx tsc --noEmit
-      - run: npx expo lint
-      - run: npm run format:check
-      - run: npx jest --ci
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
 
   ml:
     name: ml (ruff)
