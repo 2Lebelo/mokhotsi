@@ -1,9 +1,13 @@
 # Mokhotsi mobile
 
-An entirely offline point-of-sale app using Expo SDK 57, Expo Router, and
-`expo-sqlite`. Products include a name, category, LSL selling price, whole-unit
-stock, optional barcode, and optional photo. The app includes a dashboard,
-catalogue, registration/editing, persistent cart, and sales history.
+An entirely offline point-of-sale app using Expo SDK 57, Expo Router,
+`expo-sqlite`, and `expo-camera`. A product has a name, category, optional photo,
+and one or more sizes (e.g. Sugar 500 g and Sugar 2 kg). Each size has a grocery
+unit (kg, g, mg, L, mL, pcs, pack, box, carton, bottle, can, sachet, bag, tray,
+m, cm), an LSL selling price, its own whole-pack stock, and an optional barcode.
+The app includes a dashboard, catalogue, registration/editing with barcode
+scanning, a Till that scans barcodes straight into the persistent cart, and
+sales history.
 
 The Android application ID is `com.mokhotsi.app`. No EAS build, Expo account,
 API server, or login is needed for this milestone.
@@ -17,7 +21,8 @@ npm.cmd install
 npm.cmd run start:go
 ```
 
-Scan the QR code using Expo Go. SQLite is included in Expo Go. The `.cmd` suffix
+Scan the QR code using Expo Go. SQLite and the camera are included in Expo Go;
+barcode scanning needs a physical device. The `.cmd` suffix
 avoids PowerShell execution-policy errors from npm/npx `.ps1` wrappers.
 
 ## Build locally for Android
@@ -80,10 +85,14 @@ npm.cmd test
 ```
 
 Tests use Node 24's real SQLite implementation with the production migrations
-and repository SQL. They cover file reopen persistence, cart durability, atomic
-checkout rollback, idempotent checkout, stock validation, immutable receipt
-snapshots, barcode uniqueness, amount parsing, and integer overflow. These tests
-supplement device tests; they do not replace testing Expo's native SQLite driver.
+and repository SQL. They cover the v1 → v2 upgrade of a real database file, file
+reopen persistence, per-size stock, cart durability, atomic checkout rollback,
+idempotent checkout, archived sizes, immutable receipt snapshots, barcode
+uniqueness and UPC/EAN equivalence, amount and size parsing, and integer overflow.
+`tests/domain.test.mjs` covers units, barcode normalisation, the scan gate, the
+till state machine, recognition resolution, and product form validation. These
+tests supplement device tests; they do not replace testing Expo's native SQLite
+driver or the camera.
 
 On the phone:
 
@@ -97,6 +106,19 @@ On the phone:
 5. Put a product in the cart, edit its stock below the cart quantity, and verify
    checkout is blocked until the cart or stock is corrected.
 6. Edit the product name and price and verify the earlier receipt is unchanged.
+7. Register "Sugar" with two sizes (500 g and 2 kg), scanning a different barcode
+   for each. Open the Till and scan each pack: each is added once with a
+   vibration, and holding a pack in view does not add it again.
+8. Scan an unregistered barcode at the Till, choose "Register product", save, and
+   confirm you return to the Till and the next scan adds it.
+9. Remove one size of a product that has been sold. The old receipt still shows
+   it; it disappears from the catalogue and the cart.
+10. Switch tabs and background the app while on the Till; the camera stops and
+    resumes. Deny camera access once and confirm the screen offers settings.
+
+Adding `expo-camera` requires rebuilding the development app
+(`npm.cmd run android -- --device`). Upgrading over an earlier build migrates
+existing products to a single "Each" size with their price, stock, and barcode.
 
 Expo Go and the installed development client have separate storage. Switching
 between them does not migrate data. Force-stopping preserves data; uninstalling
@@ -104,14 +126,34 @@ the app or clearing its storage removes the local database and product photos.
 
 ## Implementation
 
-- `src/db/schema.ts`: versioned schema, WAL, foreign keys, and migrations.
-- `src/db/store.ts`: parameterized queries and atomic checkout.
+- `src/domain/`: units registry and size labels, barcode normalisation. Pure.
+- `src/db/schema.ts` + `src/db/migrations/`: append-only, versioned migrations
+  run per step in a transaction with a foreign-key check; WAL and foreign keys.
+- `src/db/store.ts`: the `ShopStore` facade over `repositories/` (catalogue,
+  cart, sales) with parameterized queries and atomic checkout. Sizes are
+  archived, never deleted, so receipts keep referring to them.
 - `src/db/ShopProvider.tsx`: startup, error recovery, and screen refresh.
-- `src/app/(tabs)`: dashboard, catalogue, cart, and sales history.
+- `src/features/scanner/`: `ScannerCamera`, the only component that owns a
+  camera, plus the scan gate and the registration capture modal.
+- `src/features/recognition/`: `Recognition` events and their resolution to a
+  size, a size choice, or unknown.
+- `src/features/till/`: the till state machine, hook, and sheets.
+- `src/features/products/`: product form logic, search, and editor components.
+- `src/app/(tabs)`: dashboard, catalogue, till, cart, and sales history.
 - `src/app/register.tsx`: product registration and editing.
 - `src/features/photos.ts`: persistent, local photo storage.
-- `tests/store.test.mjs`: database behavior tests.
+- `tests/`: database and domain tests.
+
+Modules under `src/domain`, `src/db`, `src/lib`, and the pure `.ts` files in
+`src/features` use relative imports with a `.ts` extension, no `@/` alias, and
+erasable TypeScript only, so `node --test` can run them directly.
+
+On-device recognition plugs into the Till without changing it: a recognizer
+emits `{ kind: "visual", productId, score }` from `ScannerCamera`, and the till
+already asks the cashier to pick a size when a product has several. `expo-camera`
+has no frame processors, so that recognizer would either run periodic still
+captures or replace the camera inside `ScannerCamera` with VisionCamera.
 
 There is no cloud sync, backup/export, login, payment processing, refund flow,
-barcode scanning, or CNN inference in this milestone. Barcodes can be entered
-manually. CNN model/runtime selection and backup/recovery require a later decision.
+weighed (fractional) selling, or CNN inference in this milestone. CNN
+model/runtime selection and backup/recovery require a later decision.

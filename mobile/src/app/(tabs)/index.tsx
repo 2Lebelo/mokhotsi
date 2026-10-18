@@ -16,8 +16,8 @@ import { formatMoney } from "@/lib/money";
 export default function DashboardScreen() {
   const { store } = useShop();
   const c = usePalette();
-  const stats = store.dashboard();
-  const recent = store.sales(3);
+  const stats = store.sales.dashboard();
+  const recent = store.sales.list(3);
   return (
     <Screen>
       <Heading
@@ -44,7 +44,7 @@ export default function DashboardScreen() {
         {[
           ["Products", stats.product_count],
           ["Units in stock", stats.unit_count],
-          ["Out of stock", stats.out_of_stock],
+          ["Sizes out of stock", stats.out_of_stock],
         ].map(([label, value]) => (
           <View
             key={label}
@@ -64,7 +64,7 @@ export default function DashboardScreen() {
         <View style={ui.grow}>
           <Button
             title="Start a sale"
-            onPress={() => router.navigate("/catalogue")}
+            onPress={() => router.navigate("/till")}
           />
         </View>
         <View style={ui.grow}>
@@ -102,7 +102,7 @@ export default function DashboardScreen() {
       ) : (
         <Empty
           title="Ready for your first sale"
-          description="Register your products, add them to the cart, and complete a sale. Your totals will appear here."
+          description="Register your products, scan them at the till, and complete a sale. Your totals will appear here."
         />
       )}
       <Card>

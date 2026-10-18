@@ -157,6 +157,35 @@ export function Button({
   );
 }
 
+export function Chip({
+  label,
+  selected,
+  onPress,
+  accessibilityLabel,
+}: {
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+  accessibilityLabel?: string;
+}) {
+  const c = usePalette();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? label}
+      accessibilityState={{ selected }}
+      onPress={onPress}
+      style={[ui.chip, { backgroundColor: selected ? c.accent : c.surface }]}
+    >
+      <Text
+        style={{ fontWeight: "600", color: selected ? c.background : c.text }}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 export function Notice({
   message,
   error = false,
@@ -199,23 +228,51 @@ export function Empty({
 export function Field({
   label,
   hint,
+  error,
+  accessory,
   ...props
-}: TextInputProps & { label: string; hint?: string }) {
+}: TextInputProps & {
+  label: string;
+  hint?: string;
+  error?: string;
+  /** Rendered beside the input, e.g. a Scan button. */
+  accessory?: React.ReactNode;
+}) {
   const c = usePalette();
+  const input = (
+    <TextInput
+      accessibilityLabel={label}
+      accessibilityHint={error}
+      placeholderTextColor={c.muted}
+      {...props}
+      style={[
+        ui.input,
+        accessory ? ui.grow : null,
+        {
+          color: c.text,
+          backgroundColor: c.surface,
+          borderColor: error ? c.danger : c.border,
+        },
+        props.style,
+      ]}
+    />
+  );
   return (
     <View style={ui.field}>
       <Text style={[ui.fieldLabel, { color: c.text }]}>{label}</Text>
-      <TextInput
-        accessibilityLabel={label}
-        placeholderTextColor={c.muted}
-        {...props}
-        style={[
-          ui.input,
-          { color: c.text, backgroundColor: c.surface, borderColor: c.border },
-          props.style,
-        ]}
-      />
-      {hint && <Text style={[ui.caption, { color: c.muted }]}>{hint}</Text>}
+      {accessory ? (
+        <View style={ui.row}>
+          {input}
+          {accessory}
+        </View>
+      ) : (
+        input
+      )}
+      {error ? (
+        <Text style={[ui.caption, { color: c.danger }]}>{error}</Text>
+      ) : (
+        hint && <Text style={[ui.caption, { color: c.muted }]}>{hint}</Text>
+      )}
     </View>
   );
 }
@@ -271,6 +328,12 @@ export const ui = StyleSheet.create({
     gap: 8,
   },
   buttonText: { fontSize: 15, fontWeight: "700", textAlign: "center" },
+  chip: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    borderRadius: 22,
+  },
   notice: { padding: 14, borderRadius: 12 },
   field: { gap: 7 },
   fieldLabel: { fontSize: 14, fontWeight: "600" },

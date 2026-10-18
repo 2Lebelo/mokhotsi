@@ -19,7 +19,7 @@ export default function SalesScreen() {
   const c = usePalette();
   const [limit, setLimit] = useState(50);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const page = store.sales(limit + 1);
+  const page = store.sales.list(limit + 1);
   const sales = page.slice(0, limit);
   return (
     <Screen scroll={false}>
@@ -74,10 +74,12 @@ export default function SalesScreen() {
             {expanded === sale.id && (
               <View style={ui.stack}>
                 <View style={[ui.divider, { backgroundColor: c.border }]} />
-                {store.saleItems(sale.id).map((item) => (
+                {store.sales.items(sale.id).map((item) => (
                   <View key={item.id} style={ui.spread}>
                     <View style={ui.grow}>
-                      <Label>{item.product_name}</Label>
+                      <Label>
+                        {item.product_name} · {item.variant_label}
+                      </Label>
                       <Label muted>
                         {item.quantity} × {formatMoney(item.unit_price_cents)} ·{" "}
                         {item.category}

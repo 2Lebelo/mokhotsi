@@ -1,12 +1,25 @@
-import { Tabs } from "expo-router";
-import { Text } from "react-native";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Tabs } from "expo-router/js-tabs";
+import type { ComponentProps } from "react";
+import type { ColorValue } from "react-native";
+
 import { usePalette } from "@/components/shop-ui";
+import { TillTabButton } from "@/components/till-tab-button";
 import { useShop } from "@/db/ShopProvider";
+
+type IconName = ComponentProps<typeof MaterialCommunityIcons>["name"];
+
+function icon(name: IconName) {
+  function TabIcon({ color }: { color: ColorValue }) {
+    return <MaterialCommunityIcons name={name} size={24} color={color} />;
+  }
+  return TabIcon;
+}
 
 export default function AppTabs() {
   const c = usePalette();
   const { store } = useShop();
-  const count = store.cart().reduce((sum, item) => sum + item.quantity, 0);
+  const count = store.cart.count();
   return (
     <Tabs
       screenOptions={{
@@ -22,18 +35,18 @@ export default function AppTabs() {
         name="index"
         options={{
           title: "Dashboard",
-          tabBarIcon: ({ color }) => (
-            <Text style={{ color, fontSize: 25 }}>⌂</Text>
-          ),
+          tabBarIcon: icon("view-dashboard-outline"),
         }}
       />
       <Tabs.Screen
         name="catalogue"
+        options={{ title: "Catalogue", tabBarIcon: icon("view-grid-outline") }}
+      />
+      <Tabs.Screen
+        name="till"
         options={{
-          title: "Catalogue",
-          tabBarIcon: ({ color }) => (
-            <Text style={{ color, fontSize: 24 }}>▦</Text>
-          ),
+          title: "Till",
+          tabBarButton: (props) => <TillTabButton {...props} />,
         }}
       />
       <Tabs.Screen
@@ -41,19 +54,12 @@ export default function AppTabs() {
         options={{
           title: "Cart",
           tabBarBadge: count ? (count > 99 ? "99+" : count) : undefined,
-          tabBarIcon: ({ color }) => (
-            <Text style={{ color, fontSize: 25 }}>＋</Text>
-          ),
+          tabBarIcon: icon("cart-outline"),
         }}
       />
       <Tabs.Screen
         name="sales"
-        options={{
-          title: "Sales",
-          tabBarIcon: ({ color }) => (
-            <Text style={{ color, fontSize: 26 }}>≡</Text>
-          ),
-        }}
+        options={{ title: "Sales", tabBarIcon: icon("receipt-text-outline") }}
       />
     </Tabs>
   );

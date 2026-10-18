@@ -17,12 +17,13 @@ import {
 } from "@/components/shop-ui";
 import { useShop } from "@/db/ShopProvider";
 import { cartTotal } from "@/db/store";
+import { variantLabel } from "@/domain/units";
 import { formatMoney } from "@/lib/money";
 
 export default function CartScreen() {
   const { store, refresh } = useShop();
   const c = usePalette();
-  const items = store.cart();
+  const items = store.cart.items();
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState<{ id: string; total: number } | null>(
     null,
@@ -40,7 +41,7 @@ export default function CartScreen() {
 
   function changeQuantity(id: string, quantity: number) {
     try {
-      store.setQuantity(id, quantity);
+      store.cart.setQuantity(id, quantity);
       setError("");
       setReceipt(null);
       refresh();
@@ -69,7 +70,7 @@ export default function CartScreen() {
           onPress: () => {
             setBusy(true);
             try {
-              store.checkout(saleId);
+              store.sales.checkout(saleId);
               setReceipt({ id: saleId, total });
               setError("");
               refresh();
@@ -99,7 +100,7 @@ export default function CartScreen() {
         style: "destructive",
         onPress: () => {
           try {
-            store.clearCart();
+            store.cart.clear();
             setError("");
             refresh();
           } catch (cause) {
@@ -143,59 +144,60 @@ export default function CartScreen() {
         ListEmptyComponent={
           <Empty
             title="Your cart is empty"
-            description="Choose products from the catalogue to start a sale."
+            description="Scan products at the till, or add them from the catalogue."
             action={
               <Button
-                title="Browse catalogue"
-                onPress={() => router.navigate("/catalogue")}
+                title="Open the till"
+                onPress={() => router.navigate("/till")}
               />
             }
           />
         }
-        renderItem={({ item }) => (
-          <Card>
-            <Text style={[ui.sectionTitle, { color: c.text }]}>
-              {item.name}
-            </Text>
-            <Label muted>
-              {formatMoney(item.price_cents)} each · {item.stock} available
-            </Label>
-            <View style={ui.spread}>
-              <View style={ui.row}>
-                <Button
-                  title="−"
-                  secondary
-                  disabled={busy}
-                  accessibilityLabel={`Decrease ${item.name} quantity`}
-                  onPress={() => changeQuantity(item.id, item.quantity - 1)}
-                />
-                <Text
-                  accessibilityLabel={`${item.name} quantity ${item.quantity}`}
-                  style={[ui.sectionTitle, { color: c.text }]}
-                >
-                  {item.quantity}
+        renderItem={({ item }) => {
+          const name = `${item.product_name} · ${variantLabel(item)}`;
+          return (
+            <Card>
+              <Text style={[ui.sectionTitle, { color: c.text }]}>{name}</Text>
+              <Label muted>
+                {formatMoney(item.price_cents)} each · {item.stock} available
+              </Label>
+              <View style={ui.spread}>
+                <View style={ui.row}>
+                  <Button
+                    title="−"
+                    secondary
+                    disabled={busy}
+                    accessibilityLabel={`Decrease ${name} quantity`}
+                    onPress={() => changeQuantity(item.id, item.quantity - 1)}
+                  />
+                  <Text
+                    accessibilityLabel={`${name} quantity ${item.quantity}`}
+                    style={[ui.sectionTitle, { color: c.text }]}
+                  >
+                    {item.quantity}
+                  </Text>
+                  <Button
+                    title="+"
+                    secondary
+                    disabled={busy || item.quantity >= item.stock}
+                    accessibilityLabel={`Increase ${name} quantity`}
+                    onPress={() => changeQuantity(item.id, item.quantity + 1)}
+                  />
+                </View>
+                <Text style={[ui.sectionTitle, { color: c.text }]}>
+                  {formatMoney(item.price_cents * item.quantity)}
                 </Text>
-                <Button
-                  title="+"
-                  secondary
-                  disabled={busy || item.quantity >= item.stock}
-                  accessibilityLabel={`Increase ${item.name} quantity`}
-                  onPress={() => changeQuantity(item.id, item.quantity + 1)}
-                />
               </View>
-              <Text style={[ui.sectionTitle, { color: c.text }]}>
-                {formatMoney(item.price_cents * item.quantity)}
-              </Text>
-            </View>
-            <Button
-              title="Remove"
-              secondary
-              disabled={busy}
-              accessibilityLabel={`Remove ${item.name} from cart`}
-              onPress={() => changeQuantity(item.id, 0)}
-            />
-          </Card>
-        )}
+              <Button
+                title="Remove"
+                secondary
+                disabled={busy}
+                accessibilityLabel={`Remove ${name} from cart`}
+                onPress={() => changeQuantity(item.id, 0)}
+              />
+            </Card>
+          );
+        }}
       />
       {items.length > 0 && (
         <Card>

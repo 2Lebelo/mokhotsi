@@ -1,108 +1,143 @@
-import * as ImagePicker from "expo-image-picker";
+import { randomUUID } from "expo-crypto";
 import { router, useLocalSearchParams } from "expo-router";
-import { useRef, useState } from "react";
+import { useReducer, useRef, useState } from "react";
 import {
-  Image,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Text,
   View,
 } from "react-native";
 
 import {
   Button,
-  Card,
+  Chip,
   errorMessage,
   Field,
   Heading,
   Notice,
   Screen,
   ui,
+  usePalette,
 } from "@/components/shop-ui";
 import { useShop } from "@/db/ShopProvider";
+import type { ProductWithVariants } from "@/db/store";
+import { variantLabel } from "@/domain/units";
 import { removePhoto, savePhoto } from "@/features/photos";
-import { parsePrice, parseStock, priceInput } from "@/lib/money";
+import { PhotoField } from "@/features/products/components/photo-field";
+import { VariantEditor } from "@/features/products/components/variant-editor";
+import {
+  draftFromProduct,
+  productFormReducer,
+  validateProductDraft,
+  type DraftErrors,
+  type VariantField,
+} from "@/features/products/product-form";
+import { BarcodeCaptureModal } from "@/features/scanner/barcode-capture-modal";
+
+/** Returns to whichever screen opened the form: the catalogue or the till. */
+function leave() {
+  if (router.canGoBack()) router.back();
+  else router.replace("/catalogue");
+}
 
 export default function RegistrationScreen() {
-  const { id } = useLocalSearchParams<{ id?: string }>();
+  const { id, barcode } = useLocalSearchParams<{
+    id?: string;
+    barcode?: string;
+  }>();
+  const { store } = useShop();
+  const existing = id ? store.catalogue.product(id) : null;
+  if (id && !existing)
+    return (
+      <Screen>
+        <Heading
+          title="Product not found"
+          subtitle="Return to the catalogue and choose a product."
+        />
+        <Button title="Back" onPress={leave} />
+      </Screen>
+    );
+  return <ProductForm existing={existing} barcode={barcode} />;
+}
+
+const noErrors: DraftErrors = { variants: {} };
+
+function ProductForm({
+  existing,
+  barcode,
+}: {
+  existing: ProductWithVariants | null;
+  barcode?: string;
+}) {
   const { store, refresh } = useShop();
-  const existing = id ? store.product(id) : null;
-  const [name, setName] = useState(existing?.name ?? "");
-  const [category, setCategory] = useState(existing?.category ?? "");
-  const [price, setPrice] = useState(
-    existing ? priceInput(existing.price_cents) : "",
+  const c = usePalette();
+  const [draft, dispatch] = useReducer(productFormReducer, null, () =>
+    draftFromProduct(existing, randomUUID, barcode),
   );
-  const [stock, setStock] = useState(existing ? String(existing.stock) : "");
-  const [barcode, setBarcode] = useState(existing?.barcode ?? "");
-  const [photo, setPhoto] = useState<string | null>(
-    existing?.photo_uri ?? null,
-  );
+  const [errors, setErrors] = useState<DraftErrors>(noErrors);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [scanKey, setScanKey] = useState<string | null>(null);
   const saving = useRef(false);
-  const categories = [
-    ...new Set(store.products().map((p) => p.category)),
-  ].sort();
+  const categories = store.catalogue.categories();
 
-  async function choosePhoto(camera: boolean) {
-    setError("");
-    setBusy(true);
-    try {
-      if (camera) {
-        const permission = await ImagePicker.requestCameraPermissionsAsync();
-        if (!permission.granted)
-          throw new Error(
-            "Allow camera access in your phone settings, or choose a photo from your library.",
-          );
-      }
-      const options: ImagePicker.ImagePickerOptions = {
-        mediaTypes: ["images"],
-        quality: 0.7,
-        allowsEditing: true,
-        aspect: [1, 1],
-      };
-      const result = camera
-        ? await ImagePicker.launchCameraAsync(options)
-        : await ImagePicker.launchImageLibraryAsync(options);
-      if (!result.canceled && result.assets[0]) setPhoto(result.assets[0].uri);
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
+  function setVariantError(key: string, field: VariantField, message?: string) {
+    setErrors((current) => ({
+      ...current,
+      variants: {
+        ...current.variants,
+        [key]: { ...current.variants[key], [field]: message },
+      },
+    }));
+  }
+
+  function changeVariant(key: string, field: VariantField, value: string) {
+    dispatch({ type: "set-variant", key, field, value });
+    if (errors.variants[key]?.[field]) setVariantError(key, field, undefined);
+  }
+
+  function captureBarcode(code: string) {
+    const key = scanKey;
+    setScanKey(null);
+    if (!key) return;
+    changeVariant(key, "barcode", code);
+    const owner = store.catalogue.variantByBarcode(code);
+    if (owner && owner.product_id !== existing?.id)
+      setVariantError(
+        key,
+        "barcode",
+        `Already used by ${owner.product_name} · ${variantLabel(owner)}.`,
+      );
   }
 
   function save() {
-    if (saving.current || busy) return;
+    if (saving.current) return;
+    const result = validateProductDraft(draft);
+    if (!result.ok) {
+      setErrors(result.errors);
+      setError("Check the highlighted fields.");
+      return;
+    }
     saving.current = true;
     setBusy(true);
     setError("");
+    setErrors(noErrors);
     let savedPhoto: string | null = null;
     let committed = false;
     try {
-      if (!name.trim()) throw new Error("Enter a product name.");
-      if (!category.trim()) throw new Error("Enter a category.");
-      const priceCents = parsePrice(price);
-      const quantity = parseStock(stock);
-      savedPhoto = savePhoto(photo);
-      store.saveProduct(
-        {
-          name,
-          category,
-          price_cents: priceCents,
-          stock: quantity,
-          barcode: barcode || null,
-          photo_uri: savedPhoto,
-        },
-        id,
+      savedPhoto = savePhoto(draft.photo);
+      store.catalogue.saveProduct(
+        { ...result.input, photo_uri: savedPhoto },
+        existing?.id,
       );
       committed = true;
       if (existing?.photo_uri && existing.photo_uri !== savedPhoto)
         removePhoto(existing.photo_uri);
       refresh();
-      router.replace("/catalogue");
+      leave();
     } catch (cause) {
-      if (!committed && savedPhoto && savedPhoto !== photo)
+      if (!committed && savedPhoto && savedPhoto !== draft.photo)
         removePhoto(savedPhoto);
       setError(errorMessage(cause));
     } finally {
@@ -112,145 +147,112 @@ export default function RegistrationScreen() {
     }
   }
 
-  if (id && !existing)
-    return (
-      <Screen>
-        <Heading
-          title="Product not found"
-          subtitle="Return to the catalogue and choose a product."
-        />
-        <Button
-          title="Back to catalogue"
-          onPress={() => router.replace("/catalogue")}
-        />
-      </Screen>
-    );
+  const scanIndex = draft.variants.findIndex((v) => v.key === scanKey);
+
   return (
     <KeyboardAvoidingView
       style={ui.flex}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <Screen>
-        <Button
-          title="Back to catalogue"
-          secondary
-          disabled={busy}
-          onPress={() => router.replace("/catalogue")}
-        />
+        <Button title="Back" secondary disabled={busy} onPress={leave} />
         <Heading
           title={existing ? "Edit product" : "Register product"}
-          subtitle="Add the details your shop needs. Saved on this device."
+          subtitle="Add each size you sell with its own price, stock, and barcode."
         />
         {!!error && <Notice message={error} error />}
         <Field
           label="Product name"
-          placeholder="e.g. Maize meal 2.5 kg"
-          value={name}
-          onChangeText={setName}
+          placeholder="e.g. Maize meal"
+          value={draft.name}
+          onChangeText={(value) =>
+            dispatch({ type: "set-field", field: "name", value })
+          }
           maxLength={120}
           editable={!busy}
+          error={errors.name}
         />
         <Field
           label="Category"
           placeholder="e.g. Groceries"
-          value={category}
-          onChangeText={setCategory}
+          value={draft.category}
+          onChangeText={(value) =>
+            dispatch({ type: "set-field", field: "category", value })
+          }
           maxLength={80}
           editable={!busy}
+          error={errors.category}
         />
         {categories.length > 0 && (
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
             contentContainerStyle={ui.row}
           >
             {categories.map((value) => (
-              <Button
+              <Chip
                 key={value}
-                title={value}
-                secondary
-                disabled={busy}
-                onPress={() => setCategory(value)}
+                label={value}
+                selected={value === draft.category.trim()}
+                onPress={() =>
+                  dispatch({ type: "set-field", field: "category", value })
+                }
               />
             ))}
           </ScrollView>
         )}
-        <View style={ui.row}>
-          <View style={ui.grow}>
-            <Field
-              label="Selling price (LSL)"
-              placeholder="0.00"
-              keyboardType="decimal-pad"
-              value={price}
-              onChangeText={setPrice}
-              maxLength={18}
-              editable={!busy}
-            />
-          </View>
-          <View style={ui.grow}>
-            <Field
-              label="Stock quantity"
-              placeholder="0"
-              keyboardType="number-pad"
-              value={stock}
-              onChangeText={setStock}
-              maxLength={16}
-              editable={!busy}
-            />
-          </View>
+
+        <View>
+          <Text style={[ui.sectionTitle, { color: c.text }]}>
+            Sizes and prices
+          </Text>
+          <Text style={[ui.body, { color: c.muted }]}>
+            e.g. Sugar 500 g and Sugar 2 kg are two sizes of one product.
+          </Text>
         </View>
-        <Field
-          label="Barcode (optional)"
-          placeholder="Enter the product barcode"
-          value={barcode}
-          onChangeText={setBarcode}
-          autoCapitalize="none"
-          autoCorrect={false}
-          maxLength={120}
-          editable={!busy}
+        {draft.variants.map((variant, index) => (
+          <VariantEditor
+            key={variant.key}
+            index={index}
+            variant={variant}
+            errors={errors.variants[variant.key]}
+            disabled={busy}
+            canRemove={draft.variants.length > 1}
+            onChange={(field, value) =>
+              changeVariant(variant.key, field, value)
+            }
+            onRemove={() =>
+              dispatch({ type: "remove-variant", key: variant.key })
+            }
+            onScan={() => setScanKey(variant.key)}
+          />
+        ))}
+        <Button
+          title="Add another size"
+          secondary
+          disabled={busy}
+          onPress={() => dispatch({ type: "add-variant", key: randomUUID() })}
         />
-        <Card>
-          {photo && (
-            <Image
-              source={{ uri: photo }}
-              accessibilityLabel="Product photo preview"
-              style={{ width: "100%", height: 200, borderRadius: 12 }}
-              resizeMode="contain"
-            />
-          )}
-          <View style={ui.row}>
-            <View style={ui.grow}>
-              <Button
-                title="Choose photo"
-                secondary
-                disabled={busy}
-                onPress={() => void choosePhoto(false)}
-              />
-            </View>
-            <View style={ui.grow}>
-              <Button
-                title="Take photo"
-                secondary
-                disabled={busy}
-                onPress={() => void choosePhoto(true)}
-              />
-            </View>
-          </View>
-          {photo && (
-            <Button
-              title="Remove photo"
-              secondary
-              disabled={busy}
-              onPress={() => setPhoto(null)}
-            />
-          )}
-        </Card>
+
+        <PhotoField
+          uri={draft.photo}
+          disabled={busy}
+          onChange={(uri) => dispatch({ type: "set-photo", uri })}
+          onError={setError}
+        />
         <Button
           title={existing ? "Save changes" : "Save product"}
           busy={busy}
           onPress={save}
         />
       </Screen>
+      <BarcodeCaptureModal
+        visible={scanKey !== null}
+        title={`For size ${scanIndex + 1}${draft.name.trim() ? ` of ${draft.name.trim()}` : ""}.`}
+        onCapture={captureBarcode}
+        onClose={() => setScanKey(null)}
+      />
     </KeyboardAvoidingView>
   );
 }

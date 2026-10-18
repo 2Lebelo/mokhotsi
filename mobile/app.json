@@ -36,6 +36,13 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Scan product barcodes at the till and when registering products.",
+          "recordAudioAndroid": false
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "backgroundColor": "#208AEF",
