@@ -1,10 +1,9 @@
+import { parseFixed } from "./decimal.ts";
+
 export function parsePrice(value: string): number {
-  const normalized = value.trim().replace(",", ".");
-  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) {
+  const cents = parseFixed(value, 2);
+  if (cents === null)
     throw new Error("Enter a price with no more than two decimal places.");
-  }
-  const [whole, fraction = ""] = normalized.split(".");
-  const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
   if (cents > BigInt(Number.MAX_SAFE_INTEGER))
     throw new Error("This price is too large.");
   return Number(cents);

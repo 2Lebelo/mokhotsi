@@ -9,8 +9,9 @@ import {
   useState,
   type PropsWithChildren,
 } from "react";
-import { ActivityIndicator, AppState } from "react-native";
+import { AppState } from "react-native";
 
+import { LoadingScreen } from "@/components/loading";
 import {
   Button,
   errorMessage,
@@ -97,16 +98,7 @@ export function ShopProvider({ children }: PropsWithChildren) {
         />
       </Screen>
     );
-  if (!value)
-    return (
-      <Screen>
-        <Heading
-          title="Opening your shop"
-          subtitle="Loading products and sales from this device."
-        />
-        <ActivityIndicator size="large" />
-      </Screen>
-    );
+  if (!value) return <LoadingScreen message="Opening your shop…" />;
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 

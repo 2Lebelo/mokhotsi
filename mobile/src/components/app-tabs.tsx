@@ -1,39 +1,71 @@
-import { Tabs } from "expo-router";
-import { Text } from "react-native";
-import { usePalette } from "@/components/shop-ui";
+import { Ionicons } from "@expo/vector-icons";
+import { Tabs } from "expo-router/js-tabs";
+import type { ColorValue } from "react-native";
+
+import { font, usePalette, type IconName } from "@/components/shop-ui";
+import { TillTabButton } from "@/components/till-tab-button";
 import { useShop } from "@/db/ShopProvider";
+
+/** Outline icon when idle, filled when the tab is selected. */
+function icon(outline: IconName, filled: IconName) {
+  function TabIcon({
+    color,
+    focused,
+  }: {
+    color: ColorValue;
+    focused: boolean;
+  }) {
+    return (
+      <Ionicons name={focused ? filled : outline} size={22} color={color} />
+    );
+  }
+  return TabIcon;
+}
 
 export default function AppTabs() {
   const c = usePalette();
   const { store } = useShop();
-  const count = store.cart().reduce((sum, item) => sum + item.quantity, 0);
+  const count = store.cart.count();
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: c.accent,
-        tabBarInactiveTintColor: c.muted,
-        tabBarStyle: { backgroundColor: c.surface, borderTopColor: c.border },
-        tabBarLabelStyle: { fontWeight: "600", fontSize: 11 },
+        tabBarInactiveTintColor: c.faint,
+        tabBarStyle: {
+          backgroundColor: c.surface,
+          borderTopColor: c.border,
+          elevation: 0,
+        },
+        tabBarLabelStyle: { ...font.medium, fontSize: 11 },
+        tabBarBadgeStyle: {
+          ...font.semibold,
+          backgroundColor: c.accent,
+          color: c.onAccent,
+          fontSize: 10,
+        },
         tabBarHideOnKeyboard: true,
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
-          title: "Dashboard",
-          tabBarIcon: ({ color }) => (
-            <Text style={{ color, fontSize: 25 }}>⌂</Text>
-          ),
+          title: "Home",
+          tabBarIcon: icon("home-outline", "home"),
         }}
       />
       <Tabs.Screen
         name="catalogue"
         options={{
           title: "Catalogue",
-          tabBarIcon: ({ color }) => (
-            <Text style={{ color, fontSize: 24 }}>▦</Text>
-          ),
+          tabBarIcon: icon("book-outline", "book"),
+        }}
+      />
+      <Tabs.Screen
+        name="till"
+        options={{
+          title: "Till",
+          tabBarButton: (props) => <TillTabButton {...props} />,
         }}
       />
       <Tabs.Screen
@@ -41,18 +73,14 @@ export default function AppTabs() {
         options={{
           title: "Cart",
           tabBarBadge: count ? (count > 99 ? "99+" : count) : undefined,
-          tabBarIcon: ({ color }) => (
-            <Text style={{ color, fontSize: 25 }}>＋</Text>
-          ),
+          tabBarIcon: icon("cart-outline", "cart"),
         }}
       />
       <Tabs.Screen
         name="sales"
         options={{
           title: "Sales",
-          tabBarIcon: ({ color }) => (
-            <Text style={{ color, fontSize: 26 }}>≡</Text>
-          ),
+          tabBarIcon: icon("receipt-outline", "receipt"),
         }}
       />
     </Tabs>

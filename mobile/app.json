@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "mokhotsi",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
     "ios": {
       "icon": "./assets/expo.icon"
     },
@@ -36,14 +36,24 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Scan product barcodes at the till and when registering products.",
+          "recordAudioAndroid": false
+        }
+      ],
+      [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#FFFFFF",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      ["react-native-fast-tflite", { "enableAndroidGpuLibraries": true }],
+      ["expo-build-properties", { "android": { "minSdkVersion": 26 } }],
+      "./plugins/with-short-native-build-dirs"
     ],
     "experiments": {
       "typedRoutes": true,
