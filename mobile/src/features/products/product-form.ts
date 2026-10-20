@@ -31,13 +31,17 @@ export type VariantDraft = {
 export type ProductDraft = {
   name: string;
   category: string;
+  /** Main photo (thumbnail) and an optional second angle. */
   photo: string | null;
+  photo2: string | null;
   variants: VariantDraft[];
 };
 
+export type PhotoSlot = "photo" | "photo2";
+
 export type ProductFormAction =
   | { type: "set-field"; field: "name" | "category"; value: string }
-  | { type: "set-photo"; uri: string | null }
+  | { type: "set-photo"; slot: PhotoSlot; uri: string | null }
   | { type: "set-variant"; key: string; field: VariantField; value: string }
   | { type: "add-variant"; key: string }
   | { type: "remove-variant"; key: string };
@@ -49,8 +53,7 @@ export type DraftErrors = {
 };
 
 export type DraftValidation =
-  | { ok: true; input: ProductInput }
-  | { ok: false; errors: DraftErrors };
+  { ok: true; input: ProductInput } | { ok: false; errors: DraftErrors };
 
 function newVariant(key: string, unit = DEFAULT_UNIT): VariantDraft {
   return {
@@ -74,12 +77,14 @@ export function draftFromProduct(
       name: "",
       category: "",
       photo: null,
+      photo2: null,
       variants: [{ ...newVariant(newKey()), barcode: barcode ?? "" }],
     };
   return {
     name: product.name,
     category: product.category,
     photo: product.photo_uri,
+    photo2: product.photo2_uri ?? null,
     variants: product.variants.map((variant) => ({
       key: variant.id,
       id: variant.id,
@@ -100,7 +105,7 @@ export function productFormReducer(
     case "set-field":
       return { ...draft, [action.field]: action.value };
     case "set-photo":
-      return { ...draft, photo: action.uri };
+      return { ...draft, [action.slot]: action.uri };
     case "set-variant":
       return {
         ...draft,
@@ -196,12 +201,17 @@ export function validateProductDraft(draft: ProductDraft): DraftValidation {
   }
 
   if (failed) return { ok: false, errors };
+  // A lone second photo becomes the main one, so every product with a photo has a thumbnail.
+  const [photo = null, photo2 = null] = [draft.photo, draft.photo2].filter(
+    (uri): uri is string => !!uri,
+  );
   return {
     ok: true,
     input: {
       name: draft.name,
       category: draft.category,
-      photo_uri: draft.photo,
+      photo_uri: photo,
+      photo2_uri: photo2 === photo ? null : photo2,
       variants,
     },
   };

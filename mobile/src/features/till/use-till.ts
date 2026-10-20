@@ -72,6 +72,8 @@ export function useTill() {
     addVariant,
     chooseProduct,
     setQuantity,
+    /** Shows an item another screen already added (e.g. identified without a barcode). */
+    showAdded: (variantId: string) => dispatch({ type: "added", variantId }),
     openSearch: () => dispatch({ type: "open-search" }),
     closeSheet: () => dispatch({ type: "close-sheet" }),
   };

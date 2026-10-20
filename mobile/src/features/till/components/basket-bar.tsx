@@ -15,17 +15,12 @@ export function BasketBar({
 }) {
   const c = usePalette();
   return (
-    <View
-      style={[
-        styles.bar,
-        { backgroundColor: c.surface, borderColor: c.border },
-      ]}
-    >
+    <View style={[styles.bar, { backgroundColor: c.subtle }]}>
       <View style={ui.grow}>
         <Text style={[ui.caption, { color: c.muted }]}>
           {count} {count === 1 ? "item" : "items"} in cart
         </Text>
-        <Text style={[ui.sectionTitle, { color: c.text }]}>
+        <Text style={[ui.money, { color: c.text, fontSize: 20 }]}>
           {total === null ? "—" : formatMoney(total)}
         </Text>
       </View>
@@ -39,8 +34,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    borderWidth: 1,
-    borderRadius: 20,
-    padding: 14,
+    borderRadius: 16,
+    padding: 12,
+    paddingLeft: 16,
   },
 });

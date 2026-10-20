@@ -1,0 +1,32 @@
+{
+  "schema_version": 4,
+  "detector": {
+    "file": "detector.tflite",
+    "arch": "yolov8n",
+    "model_version": "yolov8n-320-1cls-grocery-ft4@2026-10-19",
+    "input": [320, 320, 3],
+    "layout": "nchw",
+    "dtype": "float32",
+    "input_range": [0, 1],
+    "output": [5, 2100],
+    "show_threshold": 0.6,
+    "keep_threshold": 0.4,
+    "max_fps": 8
+  },
+  "embedder": {
+    "file": "embedder.tflite",
+    "arch": "mobilenet_v2",
+    "model_version": "mobilenet_v2-imagenet-224-1280@2026-10-10",
+    "input": [224, 224, 3],
+    "layout": "nhwc",
+    "dtype": "float32",
+    "input_range": [-1, 1],
+    "dim": 1280,
+    "max_per_second": 2
+  },
+  "matching": {
+    "accept_threshold": 0.6,
+    "margin": 0.03,
+    "top_k": 3
+  }
+}

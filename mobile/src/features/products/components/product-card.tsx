@@ -1,10 +1,12 @@
-import { Image, Text, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { Pressable, Text, View } from "react-native";
 
-import { Button, Card, Label, ui, usePalette } from "@/components/shop-ui";
+import { Button, Divider, Thumb, ui, usePalette } from "@/components/shop-ui";
 import type { ProductWithVariants } from "@/db/store";
 import { variantLabel } from "@/domain/units";
 import { formatMoney } from "@/lib/money";
 
+/** A catalogue entry: tap it to edit; each size has its own price and Add. */
 export function ProductCard({
   product,
   inCart,
@@ -19,82 +21,65 @@ export function ProductCard({
 }) {
   const c = usePalette();
   return (
-    <Card>
-      <View style={ui.row}>
-        {product.photo_uri ? (
-          <Image
-            source={{ uri: product.photo_uri }}
-            accessibilityLabel={product.name}
-            style={ui.thumbnail}
-          />
-        ) : (
-          <View
-            style={[
-              ui.thumbnail,
-              {
-                backgroundColor: c.tint,
-                alignItems: "center",
-                justifyContent: "center",
-              },
-            ]}
-          >
-            <Text style={{ color: c.accent, fontSize: 24, fontWeight: "800" }}>
-              {product.name.slice(0, 1).toUpperCase()}
-            </Text>
-          </View>
-        )}
+    <View
+      style={[ui.card, { borderColor: c.border, backgroundColor: c.surface }]}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${product.name}, ${product.category}. Edit product`}
+        onPress={onEdit}
+        style={({ pressed }) => [ui.row, { opacity: pressed ? 0.6 : 1 }]}
+      >
+        <Thumb uri={product.photo_uri} name={product.name} size={52} />
         <View style={ui.grow}>
-          <Text style={[ui.sectionTitle, { color: c.text }]}>
+          <Text numberOfLines={1} style={[ui.sectionTitle, { color: c.text }]}>
             {product.name}
           </Text>
-          <Label muted>{product.category}</Label>
+          <Text numberOfLines={1} style={[ui.caption, { color: c.muted }]}>
+            {product.category}
+            {product.variants.length > 1
+              ? ` · ${product.variants.length} sizes`
+              : ""}
+          </Text>
         </View>
-        <Button
-          title="Edit"
-          secondary
-          accessibilityLabel={`Edit ${product.name}`}
-          onPress={onEdit}
-        />
-      </View>
+        <Ionicons name="chevron-forward" size={18} color={c.faint} />
+      </Pressable>
       {product.variants.map((variant) => {
         const quantity = inCart.get(variant.id) ?? 0;
         const name = `${product.name} ${variantLabel(variant)}`;
+        const soldOut = variant.stock === 0;
         return (
-          <View
-            key={variant.id}
-            style={[
-              ui.spread,
-              { borderTopWidth: 1, borderColor: c.border, paddingTop: 12 },
-            ]}
-          >
-            <View style={ui.grow}>
-              <Text style={[ui.body, { color: c.text, fontWeight: "700" }]}>
-                {variantLabel(variant)} ·{" "}
-                <Text style={{ color: c.accent }}>
-                  {formatMoney(variant.price_cents)}
+          <View key={variant.id} style={ui.stack}>
+            <Divider />
+            <View style={ui.spread}>
+              <View style={ui.grow}>
+                <Text style={[ui.body, { color: c.text }]}>
+                  {variantLabel(variant)}
+                  <Text style={{ color: c.faint }}> · </Text>
+                  <Text style={[ui.money, { color: c.text }]}>
+                    {formatMoney(variant.price_cents)}
+                  </Text>
                 </Text>
-              </Text>
-              <Text
-                style={[
-                  ui.caption,
-                  { color: variant.stock === 0 ? c.danger : c.muted },
-                ]}
-              >
-                {variant.stock === 0
-                  ? "Out of stock"
-                  : `${variant.stock} in stock`}
-                {quantity > 0 ? ` · ${quantity} in cart` : ""}
-              </Text>
+                <Text
+                  style={[ui.caption, { color: soldOut ? c.danger : c.muted }]}
+                >
+                  {soldOut ? "Out of stock" : `${variant.stock} in stock`}
+                  {quantity > 0 ? ` · ${quantity} in cart` : ""}
+                </Text>
+              </View>
+              <Button
+                title="Add"
+                icon="add"
+                size="sm"
+                secondary
+                accessibilityLabel={`Add ${name} to cart`}
+                disabled={quantity >= variant.stock}
+                onPress={() => onAdd(variant.id)}
+              />
             </View>
-            <Button
-              title="Add"
-              accessibilityLabel={`Add ${name} to cart`}
-              disabled={quantity >= variant.stock}
-              onPress={() => onAdd(variant.id)}
-            />
           </View>
         );
       })}
-    </Card>
+    </View>
   );
 }

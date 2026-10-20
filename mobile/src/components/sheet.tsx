@@ -10,7 +10,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Button, ui, usePalette } from "@/components/shop-ui";
+import { IconButton, ui, usePalette } from "@/components/shop-ui";
 
 /** A bottom sheet for short decisions that must pause what is behind it. */
 export function Sheet({
@@ -49,19 +49,26 @@ export function Sheet({
           style={[styles.panel, { backgroundColor: c.background }]}
         >
           <View style={[styles.handle, { backgroundColor: c.border }]} />
-          <View style={ui.spread}>
+          <View style={[ui.spread, { alignItems: "flex-start" }]}>
             <View style={ui.grow}>
               <Text
                 accessibilityRole="header"
-                style={[ui.sectionTitle, { color: c.text }]}
+                style={[ui.sectionTitle, { color: c.text, fontSize: 18 }]}
               >
                 {title}
               </Text>
               {subtitle && (
-                <Text style={[ui.body, { color: c.muted }]}>{subtitle}</Text>
+                <Text style={[ui.body, { color: c.muted, fontSize: 14 }]}>
+                  {subtitle}
+                </Text>
               )}
             </View>
-            <Button title="Close" secondary onPress={onClose} />
+            <IconButton
+              icon="close"
+              size={34}
+              accessibilityLabel="Close"
+              onPress={onClose}
+            />
           </View>
           {children}
         </SafeAreaView>
@@ -74,18 +81,20 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(0,0,0,0.45)",
+    backgroundColor: "rgba(15,20,25,0.35)",
   },
   panel: {
-    maxHeight: "85%",
+    maxHeight: "88%",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
     gap: 14,
   },
   handle: {
     alignSelf: "center",
-    width: 40,
+    width: 36,
     height: 4,
     borderRadius: 2,
     marginTop: -8,

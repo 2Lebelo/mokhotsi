@@ -17,7 +17,7 @@ import {
   type ViewStyle,
 } from "react-native";
 
-import { Button, ui, usePalette } from "@/components/shop-ui";
+import { Button, font, ui, usePalette } from "@/components/shop-ui";
 import { normalizeBarcode, RETAIL_SYMBOLOGIES } from "@/domain/barcode";
 import type { Recognition } from "@/features/recognition/types";
 import { ScanGate } from "@/features/scanner/scan-gate";
@@ -154,7 +154,7 @@ const styles = StyleSheet.create({
   hint: {
     color: "#fff",
     fontSize: 14,
-    fontWeight: "600",
+    ...font.semibold,
     backgroundColor: "rgba(0,0,0,0.45)",
     paddingHorizontal: 12,
     paddingVertical: 6,

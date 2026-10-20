@@ -2,7 +2,7 @@ import { useState } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
 
 import { Sheet } from "@/components/sheet";
-import { Empty, Field, Label, ui, usePalette } from "@/components/shop-ui";
+import { Empty, Field, Thumb, ui, usePalette } from "@/components/shop-ui";
 import { useShop } from "@/db/ShopProvider";
 import { variantLabel } from "@/domain/units";
 import { matchesProduct } from "@/features/products/search";
@@ -35,7 +35,8 @@ export function ProductSearchSheet({
   return (
     <Sheet visible={visible} title="Find a product" onClose={close}>
       <Field
-        label="Search"
+        icon="search"
+        accessibilityLabel="Search"
         placeholder="Name, category, or barcode"
         value={query}
         onChangeText={setQuery}
@@ -46,7 +47,7 @@ export function ProductSearchSheet({
         data={products}
         keyExtractor={(product) => product.id}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{ gap: 10, paddingBottom: 8 }}
+        contentContainerStyle={{ paddingBottom: 8 }}
         ListEmptyComponent={
           <Empty
             title="No matching products"
@@ -61,25 +62,28 @@ export function ProductSearchSheet({
               onPick(item.id);
             }}
             style={({ pressed }) => [
-              ui.card,
+              ui.row,
               {
-                backgroundColor: c.surface,
+                paddingVertical: 10,
+                borderBottomWidth: 1,
                 borderColor: c.border,
-                opacity: pressed ? 0.75 : 1,
+                opacity: pressed ? 0.6 : 1,
               },
             ]}
           >
-            <View style={ui.spread}>
-              <View style={ui.grow}>
-                <Text style={[ui.sectionTitle, { color: c.text }]}>
-                  {item.name}
-                </Text>
-                <Label muted>
-                  {item.variants.length === 1
-                    ? `${variantLabel(item.variants[0])} · ${formatMoney(item.variants[0].price_cents)}`
-                    : `${item.variants.length} sizes`}
-                </Label>
-              </View>
+            <Thumb uri={item.photo_uri} name={item.name} size={40} />
+            <View style={ui.grow}>
+              <Text
+                numberOfLines={1}
+                style={[ui.sectionTitle, { color: c.text, fontSize: 15 }]}
+              >
+                {item.name}
+              </Text>
+              <Text style={[ui.caption, { color: c.muted }]}>
+                {item.variants.length === 1
+                  ? `${variantLabel(item.variants[0])} · ${formatMoney(item.variants[0].price_cents)}`
+                  : `${item.variants.length} sizes`}
+              </Text>
             </View>
           </Pressable>
         )}

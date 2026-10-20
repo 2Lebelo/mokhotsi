@@ -3,6 +3,13 @@ import test from "node:test";
 
 import { normalizeBarcode } from "../src/domain/barcode.ts";
 import {
+  centsToTyped,
+  pressKey,
+  quickCash,
+  tender,
+  typedCents,
+} from "../src/domain/cash.ts";
+import {
   formatVariantLabel,
   parseSize,
   sizeInput,
@@ -255,4 +262,79 @@ test("editing a product keeps saved size ids", () => {
     result.input.variants.map((v) => v.id),
     ["v1", "v2"],
   );
+});
+
+test("cash received is compared with the total to give change", () => {
+  assert.deepEqual(tender(8500, null), { status: "empty" });
+  assert.deepEqual(tender(8500, 8000), { status: "short", shortCents: 500 });
+  assert.deepEqual(tender(8500, 8500), { status: "paid", changeCents: 0 });
+  assert.deepEqual(tender(8500, 10000), { status: "paid", changeCents: 1500 });
+});
+
+test("quick cash offers the exact total and the next round note amounts", () => {
+  assert.deepEqual(quickCash(8500), [8500, 9000, 10000, 20000]);
+  assert.deepEqual(quickCash(10000), [10000, 20000]);
+  assert.deepEqual(quickCash(1234), [1234, 2000, 5000, 10000]);
+  assert.deepEqual(quickCash(0), [0]);
+});
+
+test("the cash keypad keeps the typed amount a valid price", () => {
+  const type = (keys) => keys.reduce(pressKey, "");
+  assert.equal(type(["1", "0", "0"]), "100");
+  assert.equal(type(["0", "5"]), "5", "no leading zeros");
+  assert.equal(type([".", "5"]), "0.5");
+  assert.equal(type(["2", ".", ".", "5", "0", "9"]), "2.50");
+  assert.equal(type(["9", "back", "back"]), "");
+  assert.equal(type(Array(12).fill("9")).length, 9);
+  assert.equal(typedCents(""), null);
+  assert.equal(typedCents("85"), 8500);
+  assert.equal(typedCents("85."), 8500);
+  assert.equal(typedCents("85.5"), 8550);
+  assert.equal(centsToTyped(8500), "85");
+  assert.equal(centsToTyped(8550), "85.50");
+  assert.equal(typedCents(centsToTyped(1205)), 1205);
+});
+
+test("a lone second photo becomes the product's main photo", () => {
+  let draft = draftFromProduct(null, () => "k", undefined);
+  draft = productFormReducer(draft, {
+    type: "set-field",
+    field: "name",
+    value: "Soap",
+  });
+  draft = productFormReducer(draft, {
+    type: "set-field",
+    field: "category",
+    value: "Household",
+  });
+  draft = productFormReducer(draft, {
+    type: "set-variant",
+    key: "k",
+    field: "price",
+    value: "12",
+  });
+  draft = productFormReducer(draft, {
+    type: "set-variant",
+    key: "k",
+    field: "stock",
+    value: "3",
+  });
+  draft = productFormReducer(draft, {
+    type: "set-photo",
+    slot: "photo2",
+    uri: "file:///b.jpg",
+  });
+  let result = validateProductDraft(draft);
+  assert.equal(result.ok, true);
+  assert.equal(result.input.photo_uri, "file:///b.jpg");
+  assert.equal(result.input.photo2_uri, null);
+
+  draft = productFormReducer(draft, {
+    type: "set-photo",
+    slot: "photo",
+    uri: "file:///a.jpg",
+  });
+  result = validateProductDraft(draft);
+  assert.equal(result.input.photo_uri, "file:///a.jpg");
+  assert.equal(result.input.photo2_uri, "file:///b.jpg");
 });

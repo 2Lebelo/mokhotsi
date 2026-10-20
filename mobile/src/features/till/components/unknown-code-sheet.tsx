@@ -23,12 +23,24 @@ export function UnknownCodeSheet({
     >
       <Text
         selectable
-        style={[ui.sectionTitle, { color: c.text, letterSpacing: 1 }]}
+        style={[
+          ui.money,
+          {
+            color: c.text,
+            fontSize: 18,
+            letterSpacing: 1,
+            backgroundColor: c.subtle,
+            padding: 14,
+            borderRadius: 12,
+            textAlign: "center",
+          },
+        ]}
       >
         {code}
       </Text>
       <Button
         title="Register product"
+        icon="add"
         onPress={() => code !== null && onRegister(code)}
       />
       <Button title="Keep scanning" secondary onPress={onClose} />

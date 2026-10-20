@@ -1,7 +1,7 @@
 import { Pressable, ScrollView, Text, View } from "react-native";
 
 import { Sheet } from "@/components/sheet";
-import { Label, ui, usePalette } from "@/components/shop-ui";
+import { ui, usePalette } from "@/components/shop-ui";
 import type { ProductWithVariants } from "@/db/store";
 import { variantLabel } from "@/domain/units";
 import { formatMoney } from "@/lib/money";
@@ -24,7 +24,7 @@ export function VariantPickerSheet({
       subtitle="Which size?"
       onClose={onClose}
     >
-      <ScrollView contentContainerStyle={ui.stack}>
+      <ScrollView contentContainerStyle={[ui.stack, { gap: 10 }]}>
         {product?.variants.map((variant) => {
           const soldOut = variant.stock === 0;
           return (
@@ -49,11 +49,16 @@ export function VariantPickerSheet({
                   <Text style={[ui.sectionTitle, { color: c.text }]}>
                     {variantLabel(variant)}
                   </Text>
-                  <Label muted>
+                  <Text
+                    style={[
+                      ui.caption,
+                      { color: soldOut ? c.danger : c.muted },
+                    ]}
+                  >
                     {soldOut ? "Out of stock" : `${variant.stock} in stock`}
-                  </Label>
+                  </Text>
                 </View>
-                <Text style={[ui.sectionTitle, { color: c.accent }]}>
+                <Text style={[ui.money, { color: c.text, fontSize: 16 }]}>
                   {formatMoney(variant.price_cents)}
                 </Text>
               </View>

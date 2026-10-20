@@ -1,10 +1,10 @@
-import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Ionicons } from "@expo/vector-icons";
 import type { BottomTabBarButtonProps } from "expo-router/js-tabs";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { usePalette } from "@/components/shop-ui";
+import { font, usePalette } from "@/components/shop-ui";
 
-/** The raised, centre Till button in the tab bar. */
+/** The centre Till button in the tab bar: a raised, rounded square. */
 export function TillTabButton({
   onPress,
   onLongPress,
@@ -31,36 +31,32 @@ export function TillTabButton({
           },
         ]}
       >
-        <MaterialCommunityIcons
-          name="barcode-scan"
-          size={28}
-          color={c.background}
-        />
+        <Ionicons name="scan-outline" size={24} color={c.onAccent} />
       </Pressable>
-      <Text style={[styles.label, { color: selected ? c.accent : c.muted }]}>
+      <Text style={[styles.label, { color: selected ? c.accent : c.faint }]}>
         Till
       </Text>
     </View>
   );
 }
 
-const SIZE = 62;
+const SIZE = 52;
 
 const styles = StyleSheet.create({
   slot: { flex: 1, alignItems: "center", justifyContent: "flex-end" },
   button: {
     width: SIZE,
     height: SIZE,
-    borderRadius: SIZE / 2,
-    borderWidth: 4,
+    borderRadius: 16,
+    borderWidth: 3,
     alignItems: "center",
     justifyContent: "center",
     marginTop: -SIZE / 2,
-    elevation: 6,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
+    shadowColor: "#0F1419",
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
   },
-  label: { fontWeight: "600", fontSize: 11, marginTop: 2, marginBottom: 4 },
+  label: { ...font.medium, fontSize: 11, marginTop: 2, marginBottom: 4 },
 });

@@ -2,7 +2,10 @@ export type Product = {
   id: string;
   name: string;
   category: string;
+  /** The main photo, shown as the thumbnail. */
   photo_uri: string | null;
+  /** An optional second angle, used only for visual matching. */
+  photo2_uri: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -45,6 +48,8 @@ export type ProductInput = {
   name: string;
   category: string;
   photo_uri: string | null;
+  /** Omitted means no second photo. */
+  photo2_uri?: string | null;
   variants: VariantInput[];
 };
 
@@ -53,6 +58,9 @@ export type CartItem = SellableVariant & { quantity: number };
 export type Sale = {
   id: string;
   total_cents: number;
+  /** Cash handed over; null for sales recorded before cash was captured. */
+  tendered_cents: number | null;
+  change_cents: number | null;
   created_at: string;
   item_count: number;
 };
@@ -77,4 +85,25 @@ export type Dashboard = {
   out_of_stock: number;
   today_total: number;
   today_sales: number;
+};
+
+/** Where a stored view came from: a product photo, a legacy guided capture, or a till correction. */
+export type EmbeddingSource = "photo" | "teach" | "correction";
+
+export type EmbeddingInput = {
+  productId: string;
+  modelVersion: string;
+  /** L2-normalised. */
+  vector: Float32Array;
+  source: EmbeddingSource;
+  /** The product photo or saved crop the vector was computed from. */
+  imageUri: string | null;
+};
+
+/** A stored view whose model version is outdated and whose image can be re-embedded. */
+export type StaleEmbedding = {
+  id: string;
+  product_id: string;
+  source: EmbeddingSource;
+  image_uri: string;
 };

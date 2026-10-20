@@ -120,7 +120,9 @@ export class CatalogueRepository {
     return this.db
       .getAllSync<{
         category: string;
-      }>("SELECT DISTINCT category FROM products ORDER BY category COLLATE NOCASE")
+      }>(
+        "SELECT DISTINCT category FROM products ORDER BY category COLLATE NOCASE",
+      )
       .map((row) => row.category);
   }
 
@@ -156,10 +158,11 @@ export class CatalogueRepository {
       let active = new Set<string>();
       if (id) {
         const updated = this.db.runSync(
-          "UPDATE products SET name = ?, category = ?, photo_uri = ?, updated_at = ? WHERE id = ?",
+          "UPDATE products SET name = ?, category = ?, photo_uri = ?, photo2_uri = ?, updated_at = ? WHERE id = ?",
           name,
           category,
           input.photo_uri,
+          input.photo2_uri ?? null,
           now,
           id,
         );
@@ -169,7 +172,10 @@ export class CatalogueRepository {
           this.db
             .getAllSync<{
               id: string;
-            }>("SELECT id FROM product_variants WHERE product_id = ? AND archived_at IS NULL", id)
+            }>(
+              "SELECT id FROM product_variants WHERE product_id = ? AND archived_at IS NULL",
+              id,
+            )
             .map((row) => row.id),
         );
         // Deactivate every size, then reactivate the kept ones with their new values,
@@ -181,11 +187,12 @@ export class CatalogueRepository {
         );
       } else {
         this.db.runSync(
-          "INSERT INTO products (id, name, category, photo_uri, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO products (id, name, category, photo_uri, photo2_uri, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
           productId,
           name,
           category,
           input.photo_uri,
+          input.photo2_uri ?? null,
           now,
           now,
         );

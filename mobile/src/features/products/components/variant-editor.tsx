@@ -1,6 +1,13 @@
 import { Text, View } from "react-native";
 
-import { Button, Card, Field, ui, usePalette } from "@/components/shop-ui";
+import {
+  Card,
+  Field,
+  font,
+  IconButton,
+  ui,
+  usePalette,
+} from "@/components/shop-ui";
 import { formatVariantLabel, isCountUnit, parseSize } from "@/domain/units";
 import type {
   VariantDraft,
@@ -46,15 +53,23 @@ export function VariantEditor({
     <Card>
       <View style={ui.spread}>
         <View style={ui.grow}>
-          <Text style={[ui.caption, { color: c.muted }]}>SIZE {index + 1}</Text>
+          <Text
+            style={[
+              ui.caption,
+              font.medium,
+              { color: c.muted, letterSpacing: 0.6 },
+            ]}
+          >
+            SIZE {index + 1}
+          </Text>
           <Text style={[ui.sectionTitle, { color: c.text }]}>
             {label ?? "New size"}
           </Text>
         </View>
         {canRemove && (
-          <Button
-            title="Remove"
-            secondary
+          <IconButton
+            icon="trash-outline"
+            size={36}
             disabled={disabled}
             accessibilityLabel={`Remove size ${index + 1}`}
             onPress={onRemove}
@@ -118,10 +133,11 @@ export function VariantEditor({
         maxLength={64}
         editable={!disabled}
         error={errors.barcode}
+        icon="barcode-outline"
         accessory={
-          <Button
-            title="Scan"
-            secondary
+          <IconButton
+            icon="scan-outline"
+            size={48}
             disabled={disabled}
             accessibilityLabel={`Scan barcode for size ${index + 1}`}
             onPress={onScan}

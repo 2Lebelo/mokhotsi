@@ -14,12 +14,13 @@ import {
   Chip,
   errorMessage,
   Field,
-  Heading,
   Notice,
   Screen,
+  TopBar,
   ui,
   usePalette,
 } from "@/components/shop-ui";
+import { useToast } from "@/components/toast";
 import { useShop } from "@/db/ShopProvider";
 import type { ProductWithVariants } from "@/db/store";
 import { variantLabel } from "@/domain/units";
@@ -34,6 +35,7 @@ import {
   type VariantField,
 } from "@/features/products/product-form";
 import { BarcodeCaptureModal } from "@/features/scanner/barcode-capture-modal";
+import { afterPaint } from "@/lib/after-paint";
 
 /** Returns to whichever screen opened the form: the catalogue or the till. */
 function leave() {
@@ -51,11 +53,11 @@ export default function RegistrationScreen() {
   if (id && !existing)
     return (
       <Screen>
-        <Heading
+        <TopBar
           title="Product not found"
           subtitle="Return to the catalogue and choose a product."
+          onBack={leave}
         />
-        <Button title="Back" onPress={leave} />
       </Screen>
     );
   return <ProductForm existing={existing} barcode={barcode} />;
@@ -71,6 +73,7 @@ function ProductForm({
   barcode?: string;
 }) {
   const { store, refresh } = useShop();
+  const toast = useToast();
   const c = usePalette();
   const [draft, dispatch] = useReducer(productFormReducer, null, () =>
     draftFromProduct(existing, randomUUID, barcode),
@@ -123,22 +126,36 @@ function ProductForm({
     setBusy(true);
     setError("");
     setErrors(noErrors);
-    let savedPhoto: string | null = null;
+    afterPaint(() => commit(result.input));
+  }
+
+  function commit(input: Parameters<typeof store.catalogue.saveProduct>[0]) {
+    // Photos copied into app storage by this save, removed again if it fails.
+    const copied: string[] = [];
+    const keep = (source: string | null | undefined) => {
+      const saved = savePhoto(source ?? null);
+      if (saved && saved !== source) copied.push(saved);
+      return saved;
+    };
     let committed = false;
     try {
-      savedPhoto = savePhoto(draft.photo);
+      const photo = keep(input.photo_uri);
+      const photo2 = keep(input.photo2_uri);
       store.catalogue.saveProduct(
-        { ...result.input, photo_uri: savedPhoto },
+        { ...input, photo_uri: photo, photo2_uri: photo2 },
         existing?.id,
       );
       committed = true;
-      if (existing?.photo_uri && existing.photo_uri !== savedPhoto)
-        removePhoto(existing.photo_uri);
+      for (const old of [existing?.photo_uri, existing?.photo2_uri])
+        if (old && old !== photo && old !== photo2) removePhoto(old);
+      // New or changed photos are learnt in the background (VisionProvider).
       refresh();
+      toast.success(
+        existing ? "Changes saved" : `${input.name.trim()} added to catalogue`,
+      );
       leave();
     } catch (cause) {
-      if (!committed && savedPhoto && savedPhoto !== draft.photo)
-        removePhoto(savedPhoto);
+      if (!committed) copied.forEach(removePhoto);
       setError(errorMessage(cause));
     } finally {
       // Keep the guard until navigation unmounts the successfully saved form.
@@ -151,16 +168,27 @@ function ProductForm({
 
   return (
     <KeyboardAvoidingView
-      style={ui.flex}
+      style={[ui.flex, { backgroundColor: c.background }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <Screen>
-        <Button title="Back" secondary disabled={busy} onPress={leave} />
-        <Heading
-          title={existing ? "Edit product" : "Register product"}
-          subtitle="Add each size you sell with its own price, stock, and barcode."
+        <TopBar
+          title={existing ? "Edit product" : "New product"}
+          subtitle={
+            existing ? existing.name : "Photos, name, and each size you sell."
+          }
+          onBack={leave}
+          disabled={busy}
         />
         {!!error && <Notice message={error} error />}
+
+        <PhotoField
+          photos={{ photo: draft.photo, photo2: draft.photo2 }}
+          disabled={busy}
+          onChange={(slot, uri) => dispatch({ type: "set-photo", slot, uri })}
+          onError={setError}
+        />
+
         <Field
           label="Product name"
           placeholder="e.g. Maize meal"
@@ -188,7 +216,7 @@ function ProductForm({
             horizontal
             showsHorizontalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={ui.row}
+            contentContainerStyle={[ui.row, { gap: 8 }]}
           >
             {categories.map((value) => (
               <Chip
@@ -203,11 +231,11 @@ function ProductForm({
           </ScrollView>
         )}
 
-        <View>
+        <View style={{ marginTop: 8 }}>
           <Text style={[ui.sectionTitle, { color: c.text }]}>
             Sizes and prices
           </Text>
-          <Text style={[ui.body, { color: c.muted }]}>
+          <Text style={[ui.caption, { color: c.muted }]}>
             e.g. Sugar 500 g and Sugar 2 kg are two sizes of one product.
           </Text>
         </View>
@@ -230,17 +258,12 @@ function ProductForm({
         ))}
         <Button
           title="Add another size"
-          secondary
+          icon="add"
+          variant="ghost"
           disabled={busy}
           onPress={() => dispatch({ type: "add-variant", key: randomUUID() })}
         />
 
-        <PhotoField
-          uri={draft.photo}
-          disabled={busy}
-          onChange={(uri) => dispatch({ type: "set-photo", uri })}
-          onError={setError}
-        />
         <Button
           title={existing ? "Save changes" : "Save product"}
           busy={busy}

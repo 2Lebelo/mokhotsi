@@ -9,10 +9,11 @@ import {
   errorMessage,
   Field,
   Heading,
-  Notice,
+  IconButton,
   Screen,
   ui,
 } from "@/components/shop-ui";
+import { useToast } from "@/components/toast";
 import { useShop } from "@/db/ShopProvider";
 import { variantLabel } from "@/domain/units";
 import { ProductCard } from "@/features/products/components/product-card";
@@ -20,10 +21,9 @@ import { matchesProduct } from "@/features/products/search";
 
 export default function CatalogueScreen() {
   const { store, refresh } = useShop();
+  const toast = useToast();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string | null>(null);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState(false);
   const products = store.catalogue.products();
   const categories = store.catalogue.categories();
   const activeCategory =
@@ -41,66 +41,86 @@ export default function CatalogueScreen() {
     try {
       const item = store.cart.add(variantId);
       refresh();
-      setError(false);
-      setMessage(`${item.product_name} · ${variantLabel(item)} added to cart.`);
+      toast.success(
+        `${item.product_name} · ${variantLabel(item)} added to cart`,
+      );
     } catch (cause) {
-      setError(true);
-      setMessage(errorMessage(cause));
+      toast.error(errorMessage(cause));
     }
   }
 
   return (
     <Screen scroll={false}>
       <Heading
-        title="Product catalogue"
+        title="Catalogue"
         subtitle={`${products.length} ${products.length === 1 ? "product" : "products"} · prices in LSL`}
-      />
-      <Button
-        title="Register product"
-        onPress={() => router.push("/register")}
+        action={
+          <IconButton
+            icon="add"
+            variant="accent"
+            size={44}
+            accessibilityLabel="New product"
+            onPress={() => router.push("/register")}
+          />
+        }
       />
       <Field
-        label="Search products"
-        placeholder="Name, category, or barcode"
+        icon="search"
+        placeholder="Search name, category, or barcode"
+        accessibilityLabel="Search products"
         value={query}
         onChangeText={setQuery}
         autoCorrect={false}
+        clearButtonMode="while-editing"
+        returnKeyType="search"
       />
-      <View>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={ui.row}
-        >
-          {[null, ...categories].map((value) => (
-            <Chip
-              key={value ?? "__all"}
-              label={value ?? "All products"}
-              selected={value === activeCategory}
-              onPress={() => setCategory(value)}
-            />
-          ))}
-        </ScrollView>
-      </View>
-      {!!message && <Notice message={message} error={error} />}
+      {categories.length > 0 && (
+        <View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={[ui.row, { gap: 8 }]}
+          >
+            {[null, ...categories].map((value) => (
+              <Chip
+                key={value ?? "__all"}
+                label={value ?? "All"}
+                accessibilityLabel={value ?? "All products"}
+                selected={value === activeCategory}
+                onPress={() => setCategory(value)}
+              />
+            ))}
+          </ScrollView>
+        </View>
+      )}
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={{ gap: 12, paddingBottom: 16 }}
+        contentContainerStyle={{ gap: 12, paddingBottom: 24 }}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
         ListEmptyComponent={
-          <Empty
-            title={
-              products.length
-                ? "No matching products"
-                : "Your catalogue starts here"
-            }
-            description={
-              products.length
-                ? "Try another search or category."
-                : "Add a product with its sizes, prices, and stock."
-            }
-          />
+          products.length ? (
+            <Empty
+              icon="search-outline"
+              title="No matching products"
+              description="Try another search or category."
+            />
+          ) : (
+            <Empty
+              icon="book-outline"
+              title="Your catalogue starts here"
+              description="Add a product with a photo, its sizes, prices, and stock."
+              action={
+                <Button
+                  title="New product"
+                  icon="add"
+                  onPress={() => router.push("/register")}
+                />
+              }
+            />
+          )
         }
         renderItem={({ item }) => (
           <ProductCard

@@ -1,4 +1,4 @@
-import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
@@ -20,22 +20,22 @@ export function UnitPicker({
   const unit = unitByCode(value);
   return (
     <View style={ui.field}>
-      <Text style={[ui.fieldLabel, { color: c.text }]}>Unit</Text>
+      <Text style={[ui.fieldLabel, { color: c.muted }]}>Unit</Text>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Unit, ${unit?.label ?? value}. Change unit`}
         disabled={disabled}
         onPress={() => setOpen(true)}
         style={[
-          ui.input,
+          ui.inputFrame,
           ui.spread,
-          { backgroundColor: c.surface, borderColor: c.border },
+          { backgroundColor: c.subtle, borderColor: c.subtle },
         ]}
       >
-        <Text style={[ui.body, { color: c.text }]}>
+        <Text numberOfLines={1} style={[ui.body, ui.grow, { color: c.text }]}>
           {unit ? `${unit.label} (${unit.symbol})` : value}
         </Text>
-        <MaterialCommunityIcons name="chevron-down" size={20} color={c.muted} />
+        <Ionicons name="chevron-down" size={18} color={c.muted} />
       </Pressable>
       <Sheet
         visible={open}

@@ -3,7 +3,7 @@ import type { SQLiteDatabase } from "expo-sqlite";
 import { variantLabel } from "../../domain/units.ts";
 import type { Dashboard, Sale, SaleItem } from "../types.ts";
 import { cartTotal, type CartRepository } from "./cart.ts";
-import type { IdFactory } from "./shared.ts";
+import { nonNegativeInteger, type IdFactory } from "./shared.ts";
 
 export class SalesRepository {
   private db: SQLiteDatabase;
@@ -16,9 +16,15 @@ export class SalesRepository {
     this.cart = cart;
   }
 
-  /** Records the cart as a sale. Repeating a sale id never records a second sale. */
-  checkout(saleId: string): string {
+  /**
+   * Records the cart as a sale paid in cash. Repeating a sale id never records a
+   * second sale. `tenderedCents` is the cash handed over (exact cash if omitted);
+   * the change is stored with the sale for its receipt.
+   */
+  checkout(saleId: string, tenderedCents?: number): string {
     if (!saleId.trim()) throw new Error("A sale reference is required.");
+    if (tenderedCents !== undefined)
+      nonNegativeInteger(tenderedCents, "Cash received");
     this.db.withTransactionSync(() => {
       if (this.db.getFirstSync("SELECT id FROM sales WHERE id = ?", saleId))
         return;
@@ -26,6 +32,11 @@ export class SalesRepository {
       if (!items.length)
         throw new Error("Add at least one product to the cart.");
       const total = cartTotal(items);
+      const tendered = tenderedCents ?? total;
+      if (tendered < total)
+        throw new Error(
+          "Cash received is less than the total. Enter the full amount.",
+        );
       const now = new Date().toISOString();
       for (const item of items) {
         const name = `${item.product_name} · ${variantLabel(item)}`;
@@ -39,9 +50,11 @@ export class SalesRepository {
           );
       }
       this.db.runSync(
-        "INSERT INTO sales (id, total_cents, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO sales (id, total_cents, tendered_cents, change_cents, created_at) VALUES (?, ?, ?, ?, ?)",
         saleId,
         total,
+        tendered,
+        tendered - total,
         now,
       );
       for (const item of items) {

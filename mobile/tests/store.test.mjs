@@ -155,6 +155,42 @@ test("repeating a checkout reference never duplicates a sale or consumes a new c
   assert.equal(f.store.cart.items()[0].quantity, 1);
 });
 
+test("a cash sale stores the cash received and the change", (t) => {
+  const f = fixture(t);
+  const { variantId } = saveOne(f.store, {}, { price_cents: 8500 });
+  f.store.cart.add(variantId);
+  assert.throws(
+    () => f.store.sales.checkout(randomUUID(), 8000),
+    /less than the total/,
+  );
+  assert.equal(
+    f.store.sales.list().length,
+    0,
+    "a short payment records nothing",
+  );
+  assert.equal(f.store.cart.items().length, 1, "and keeps the cart");
+  assert.throws(
+    () => f.store.sales.checkout(randomUUID(), -1),
+    /Cash received/,
+  );
+
+  const saleId = randomUUID();
+  f.store.sales.checkout(saleId, 10000);
+  // Repeating the reference with another amount changes nothing.
+  f.store.sales.checkout(saleId, 20000);
+  const [sale] = f.store.sales.list();
+  assert.equal(sale.total_cents, 8500);
+  assert.equal(sale.tendered_cents, 10000);
+  assert.equal(sale.change_cents, 1500);
+
+  // Without an amount, the sale is recorded as exact cash.
+  f.store.cart.add(variantId);
+  f.store.sales.checkout(randomUUID());
+  const latest = f.store.sales.list().find((s) => s.id !== saleId);
+  assert.equal(latest.tendered_cents, 8500);
+  assert.equal(latest.change_cents, 0);
+});
+
 test("a write failure halfway through checkout rolls back sale, receipt, and stock together", (t) => {
   const f = fixture(t);
   const { variantId } = saveOne(f.store);
@@ -440,4 +476,250 @@ test("price parsing preserves cents and rejects malformed amounts", () => {
     assert.throws(() => parsePrice(value));
   assert.equal(parseStock("0"), 0);
   for (const value of ["-1", "1.5", ""]) assert.throws(() => parseStock(value));
+});
+
+const MODEL = "mobilenet_v2-test@1";
+const unitVector = (...values) => {
+  const vector = new Float32Array(values);
+  const norm = Math.hypot(...values);
+  return vector.map((v) => v / norm);
+};
+
+test("upgrading a v2 database adds the embeddings table without touching products", (t) => {
+  const f = fixture(t, { migrate: false });
+  for (const migration of MIGRATIONS.slice(0, 2))
+    f.db.withTransactionSync(() => {
+      migration.up(f.db);
+      f.db.execSync(`PRAGMA user_version = ${migration.version}`);
+    });
+  // Written as a v2 app would, since today's repository expects newer columns.
+  const now = new Date().toISOString();
+  const productId = "p1";
+  f.db.runSync(
+    "INSERT INTO products (id, name, category, photo_uri, created_at, updated_at) VALUES (?, 'Maize meal', 'Groceries', NULL, ?, ?)",
+    productId,
+    now,
+    now,
+  );
+  f.db.runSync(
+    "INSERT INTO product_variants (id, product_id, size_milli, unit, price_cents, stock, barcode, position, created_at, updated_at) VALUES ('v1', ?, 2500, 'kg', 3250, 12, NULL, 0, ?, ?)",
+    productId,
+    now,
+    now,
+  );
+  migrateDatabase(f.db);
+  assert.equal(
+    f.db.getFirstSync("PRAGMA user_version").user_version,
+    SCHEMA_VERSION,
+  );
+  assert.equal(f.store.catalogue.product(productId).name, "Maize meal");
+  assert.equal(f.store.catalogue.product(productId).variants.length, 1);
+  assert.equal(f.store.embeddings.countsByProduct(MODEL).size, 0);
+});
+
+test("embeddings are stored per model version and counted per product", (t) => {
+  const f = fixture(t);
+  const sugar = saveOne(f.store, { name: "Sugar" }).productId;
+  const milk = saveOne(f.store, { name: "Milk" }).productId;
+  const add = (productId, vector, source = "teach", modelVersion = MODEL) =>
+    f.store.embeddings.add({
+      productId,
+      modelVersion,
+      vector,
+      source,
+      imageUri: `file:///crops/${Math.random()}.jpg`,
+    });
+  add(sugar, unitVector(1, 0));
+  add(sugar, unitVector(0.8, 0.6));
+  add(milk, unitVector(0, 1));
+  add(milk, unitVector(0, 1), "teach", "older@0");
+  f.reopen();
+  const vectors = f.store.embeddings.vectors(MODEL);
+  assert.equal(vectors.length, 3);
+  assert.deepEqual(
+    [...vectors.find((v) => v.productId === milk).vector],
+    [0, 1],
+  );
+  assert.deepEqual(
+    [...f.store.embeddings.countsByProduct(MODEL)].sort(),
+    [
+      [milk, 1],
+      [sugar, 2],
+    ].sort(),
+  );
+  assert.throws(
+    () => add("no-such-product", unitVector(1, 0)),
+    /FOREIGN KEY/,
+    "vectors always belong to a product",
+  );
+});
+
+test("photo vectors follow the product's current photo and model version", (t) => {
+  const f = fixture(t);
+  const withPhoto = saveOne(f.store, {
+    name: "Bread",
+    photo_uri: "file:///photos/a.jpg",
+  }).productId;
+  saveOne(f.store, { name: "No photo" });
+  assert.deepEqual(f.store.embeddings.pendingPhotos(MODEL), [
+    { productId: withPhoto, photoUri: "file:///photos/a.jpg" },
+  ]);
+
+  const photo = {
+    productId: withPhoto,
+    modelVersion: MODEL,
+    vectors: [unitVector(1, 0), unitVector(1, 1)],
+    imageUri: "file:///photos/a.jpg",
+  };
+  f.store.embeddings.replacePhoto(photo);
+  f.store.embeddings.replacePhoto(photo);
+  assert.equal(
+    f.store.embeddings.countsByProduct(MODEL).get(withPhoto),
+    2,
+    "one set of crops per photo, replaced rather than duplicated",
+  );
+  assert.deepEqual(f.store.embeddings.pendingPhotos(MODEL), []);
+
+  // A new photo makes the old vector stale and the product pending again.
+  const product = f.store.catalogue.product(withPhoto);
+  f.store.catalogue.saveProduct(
+    {
+      name: product.name,
+      category: product.category,
+      photo_uri: "file:///photos/b.jpg",
+      variants: product.variants,
+    },
+    withPhoto,
+  );
+  assert.equal(f.store.embeddings.pendingPhotos(MODEL).length, 1);
+  assert.equal(f.store.embeddings.removeStalePhotos(MODEL), 2);
+  assert.equal(f.store.embeddings.countsByProduct(MODEL).size, 0);
+  // A new model version makes every photo pending.
+  f.store.embeddings.replacePhoto({
+    ...photo,
+    imageUri: "file:///photos/b.jpg",
+  });
+  assert.equal(f.store.embeddings.pendingPhotos("next@2").length, 1);
+});
+
+test("a second photo is embedded and kept separately from the main photo", (t) => {
+  const f = fixture(t);
+  const photos = { a: "file:///photos/a.jpg", b: "file:///photos/b.jpg" };
+  const productId = saveOne(f.store, {
+    name: "Soap",
+    photo_uri: photos.a,
+    photo2_uri: photos.b,
+  }).productId;
+  assert.deepEqual(
+    f.store.embeddings
+      .pendingPhotos(MODEL)
+      .map((row) => row.photoUri)
+      .sort(),
+    [photos.a, photos.b],
+  );
+  const embed = (imageUri, vectors) =>
+    f.store.embeddings.replacePhoto({
+      productId,
+      modelVersion: MODEL,
+      vectors,
+      imageUri,
+    });
+  embed(photos.a, [unitVector(1, 0), unitVector(1, 1)]);
+  embed(photos.b, [unitVector(0, 1)]);
+  // Re-embedding one photo never removes the other's vectors.
+  embed(photos.a, [unitVector(1, 0), unitVector(1, 1)]);
+  assert.equal(f.store.embeddings.countsByProduct(MODEL).get(productId), 3);
+  assert.deepEqual(f.store.embeddings.pendingPhotos(MODEL), []);
+  assert.throws(() => embed(photos.a, []), /at least one vector/);
+
+  // Removing the second photo makes only its vectors stale.
+  const saved = f.store.catalogue.product(productId);
+  assert.equal(saved.photo2_uri, photos.b);
+  f.store.catalogue.saveProduct({ ...saved, photo2_uri: null }, productId);
+  assert.equal(f.store.embeddings.removeStalePhotos(MODEL), 1);
+  assert.equal(f.store.embeddings.countsByProduct(MODEL).get(productId), 2);
+});
+
+test("upgrading a v3 database adds the second photo and cash columns", (t) => {
+  const f = fixture(t, { migrate: false });
+  for (const migration of MIGRATIONS.slice(0, 3))
+    f.db.withTransactionSync(() => {
+      migration.up(f.db);
+      f.db.execSync(`PRAGMA user_version = ${migration.version}`);
+    });
+  const now = new Date().toISOString();
+  f.db.runSync(
+    "INSERT INTO products (id, name, category, photo_uri, created_at, updated_at) VALUES ('p1', 'Bread', 'Bakery', 'file:///photos/a.jpg', ?, ?)",
+    now,
+    now,
+  );
+  f.db.runSync(
+    "INSERT INTO sales (id, total_cents, created_at) VALUES ('s1', 1500, ?)",
+    now,
+  );
+  migrateDatabase(f.db);
+  assert.equal(
+    f.db.getFirstSync("PRAGMA user_version").user_version,
+    SCHEMA_VERSION,
+  );
+  const bread = f.store.catalogue.product("p1");
+  assert.equal(bread.photo_uri, "file:///photos/a.jpg");
+  assert.equal(bread.photo2_uri, null);
+  const [sale] = f.store.sales.list();
+  assert.equal(sale.total_cents, 1500);
+  assert.equal(sale.tendered_cents, null);
+  assert.equal(sale.change_cents, null);
+});
+
+test("outdated taught views are listed for re-embedding and swapped atomically", (t) => {
+  const f = fixture(t);
+  const sugar = saveOne(f.store, { name: "Sugar" }).productId;
+  const input = (modelVersion, imageUri) => ({
+    productId: sugar,
+    modelVersion,
+    vector: unitVector(1, 0),
+    source: "teach",
+    imageUri,
+  });
+  f.store.embeddings.add(input("older@0", "file:///crops/1.jpg"));
+  f.store.embeddings.add(input("older@0", null));
+  f.store.embeddings.add(input(MODEL, "file:///crops/2.jpg"));
+  const stale = f.store.embeddings.stale(MODEL, 10);
+  assert.deepEqual(
+    stale.map((row) => row.image_uri),
+    ["file:///crops/1.jpg"],
+  );
+  f.store.embeddings.replaceStale(
+    stale[0].id,
+    input(MODEL, "file:///crops/1.jpg"),
+  );
+  assert.equal(f.store.embeddings.stale(MODEL, 10).length, 0);
+  assert.equal(f.store.embeddings.countsByProduct(MODEL).get(sugar), 2);
+});
+
+test("corrections are capped per product and removals return their image files", (t) => {
+  const f = fixture(t);
+  const sugar = saveOne(f.store, { name: "Sugar" }).productId;
+  for (let i = 0; i < 5; i++)
+    f.store.embeddings.add({
+      productId: sugar,
+      modelVersion: MODEL,
+      vector: unitVector(1, i),
+      source: "correction",
+      imageUri: `file:///crops/c${i}.jpg`,
+    });
+  f.store.embeddings.add({
+    productId: sugar,
+    modelVersion: MODEL,
+    vector: unitVector(1, 0),
+    source: "teach",
+    imageUri: "file:///crops/t.jpg",
+  });
+  const pruned = f.store.embeddings.pruneCorrections(sugar, 3);
+  assert.equal(pruned.length, 2);
+  assert.equal(f.store.embeddings.countsByProduct(MODEL).get(sugar), 4);
+  assert.deepEqual(f.store.embeddings.remove(sugar, "teach"), [
+    "file:///crops/t.jpg",
+  ]);
+  assert.equal(f.store.embeddings.countsByProduct(MODEL).get(sugar), 3);
 });
