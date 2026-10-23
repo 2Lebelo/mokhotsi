@@ -31,10 +31,12 @@ export function toSellable(
 function normalizeVariant(input: VariantInput): VariantInput {
   assertValidSize(input.size_milli, input.unit);
   nonNegativeInteger(input.price_cents, "Price");
+  const cost = input.cost_cents ?? null;
+  if (cost !== null) nonNegativeInteger(cost, "Cost price");
   nonNegativeInteger(input.stock, "Stock");
   const barcode = normalizeBarcode(input.barcode);
   if (barcode) assertValidBarcode(barcode);
-  return { ...input, barcode };
+  return { ...input, cost_cents: cost, barcode };
 }
 
 function assertDistinct(variants: VariantInput[]): void {
@@ -201,10 +203,11 @@ export class CatalogueRepository {
       variants.forEach((variant, position) => {
         if (variant.id && active.has(variant.id)) {
           this.db.runSync(
-            "UPDATE product_variants SET size_milli = ?, unit = ?, price_cents = ?, stock = ?, barcode = ?, position = ?, archived_at = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE product_variants SET size_milli = ?, unit = ?, price_cents = ?, cost_cents = ?, stock = ?, barcode = ?, position = ?, archived_at = NULL, updated_at = ? WHERE id = ?",
             variant.size_milli,
             variant.unit,
             variant.price_cents,
+            variant.cost_cents ?? null,
             variant.stock,
             variant.barcode,
             position,
@@ -213,12 +216,13 @@ export class CatalogueRepository {
           );
         } else {
           this.db.runSync(
-            "INSERT INTO product_variants (id, product_id, size_milli, unit, price_cents, stock, barcode, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO product_variants (id, product_id, size_milli, unit, price_cents, cost_cents, stock, barcode, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             this.newId(),
             productId,
             variant.size_milli,
             variant.unit,
             variant.price_cents,
+            variant.cost_cents ?? null,
             variant.stock,
             variant.barcode,
             position,

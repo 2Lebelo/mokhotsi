@@ -59,6 +59,9 @@ export default function RootLayout() {
                 <Stack.Screen name="(tabs)" />
                 <Stack.Screen name="register" />
                 <Stack.Screen name="identify" />
+                <Stack.Screen name="sales" />
+                <Stack.Screen name="reports" />
+                <Stack.Screen name="users" />
               </Stack>
             </VisionProvider>
           </ShopProvider>

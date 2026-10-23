@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router/js-tabs";
 import type { ColorValue } from "react-native";
 
+import { MenuTabButton } from "@/components/dock-menu";
 import { font, usePalette, type IconName } from "@/components/shop-ui";
 import { TillTabButton } from "@/components/till-tab-button";
 import { useShop } from "@/db/ShopProvider";
@@ -77,10 +78,10 @@ export default function AppTabs() {
         }}
       />
       <Tabs.Screen
-        name="sales"
+        name="menu"
         options={{
-          title: "Sales",
-          tabBarIcon: icon("receipt-outline", "receipt"),
+          title: "Menu",
+          tabBarButton: (props) => <MenuTabButton {...props} />,
         }}
       />
     </Tabs>

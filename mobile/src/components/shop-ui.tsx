@@ -529,11 +529,15 @@ export function Field({
   );
 }
 
-/** A − quantity + control. */
+/**
+ * A − quantity + control. Without `min`, stepping below one removes the item
+ * (a cart line); with `min`, the value stops there instead.
+ */
 export function Stepper({
   value,
   name,
   onChange,
+  min,
   max,
   disabled = false,
 }: {
@@ -541,18 +545,20 @@ export function Stepper({
   /** For screen readers, e.g. "Sugar · 2 kg". */
   name: string;
   onChange: (value: number) => void;
+  min?: number;
   max?: number;
   disabled?: boolean;
 }) {
+  const removes = min === undefined && value <= 1;
   return (
     <View style={[ui.stepper, { borderColor: palette.border }]}>
       <IconButton
-        icon={value <= 1 ? "trash-outline" : "remove"}
+        icon={removes ? "trash-outline" : "remove"}
         variant="plain"
         size={34}
-        disabled={disabled}
+        disabled={disabled || (min !== undefined && value <= min)}
         accessibilityLabel={
-          value <= 1 ? `Remove ${name}` : `Decrease ${name} quantity`
+          removes ? `Remove ${name}` : `Decrease ${name} quantity`
         }
         onPress={() => onChange(value - 1)}
       />

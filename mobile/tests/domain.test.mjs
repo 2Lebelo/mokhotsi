@@ -16,7 +16,13 @@ import {
   UNITS,
 } from "../src/domain/units.ts";
 import {
+  percentChange,
+  periodRange,
+  sameLocalDay,
+} from "../src/domain/periods.ts";
+import {
   draftFromProduct,
+  draftMargin,
   productFormReducer,
   validateProductDraft,
 } from "../src/features/products/product-form.ts";
@@ -214,6 +220,7 @@ test("the product form validates every size and builds the store input", () => {
     ["unit", "kg"],
     ["size", "2"],
     ["price", "50.00"],
+    ["cost", "abc"],
     ["stock", "3"],
     ["barcode", ""],
   ])
@@ -224,12 +231,22 @@ test("the product form validates every size and builds the store input", () => {
       value,
     });
   result = validateProductDraft(draft);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.variants[second].cost, "a malformed cost is flagged");
+  draft = productFormReducer(draft, {
+    type: "set-variant",
+    key: second,
+    field: "cost",
+    value: "42.50",
+  });
+  result = validateProductDraft(draft);
   assert.equal(result.ok, true);
   assert.deepEqual(result.input.variants, [
     {
       size_milli: 500000,
       unit: "g",
       price_cents: 1500,
+      cost_cents: null,
       stock: 10,
       barcode: "6001234567890",
     },
@@ -237,6 +254,7 @@ test("the product form validates every size and builds the store input", () => {
       size_milli: 2000,
       unit: "kg",
       price_cents: 5000,
+      cost_cents: 4250,
       stock: 3,
       barcode: null,
     },
@@ -337,4 +355,104 @@ test("a lone second photo becomes the product's main photo", () => {
   result = validateProductDraft(draft);
   assert.equal(result.input.photo_uri, "file:///a.jpg");
   assert.equal(result.input.photo2_uri, "file:///b.jpg");
+});
+
+// Local-time constructors keep these tests independent of the machine's time zone.
+const local = (y, m, d, h = 0) => new Date(y, m - 1, d, h);
+
+test("periods are calendar today, Monday weeks, months, and quarters", () => {
+  // Thursday 22 October 2026, mid-afternoon.
+  const now = local(2026, 10, 22, 15);
+  const today = periodRange("today", now);
+  assert.deepEqual(
+    [today.start, today.end, today.previousStart, today.previousEnd],
+    [
+      local(2026, 10, 22),
+      local(2026, 10, 23),
+      local(2026, 10, 21),
+      local(2026, 10, 22),
+    ],
+  );
+  const week = periodRange("week", now);
+  assert.deepEqual(
+    [week.start, week.end, week.previousStart],
+    [local(2026, 10, 19), local(2026, 10, 26), local(2026, 10, 12)],
+  );
+  // A Sunday still belongs to the week that started on Monday.
+  assert.deepEqual(
+    periodRange("week", local(2026, 10, 25, 23)).start,
+    local(2026, 10, 19),
+  );
+  const month = periodRange("month", now);
+  assert.deepEqual(
+    [month.start, month.end, month.previousStart],
+    [local(2026, 10, 1), local(2026, 11, 1), local(2026, 9, 1)],
+  );
+  const quarter = periodRange("quarter", now);
+  assert.deepEqual(
+    [quarter.start, quarter.end, quarter.previousStart, quarter.previousEnd],
+    [
+      local(2026, 10, 1),
+      local(2027, 1, 1),
+      local(2026, 7, 1),
+      local(2026, 10, 1),
+    ],
+  );
+  // The first quarter compares with the last quarter of the year before.
+  const january = periodRange("quarter", local(2027, 2, 14));
+  assert.deepEqual(
+    [january.start, january.previousStart],
+    [local(2027, 1, 1), local(2026, 10, 1)],
+  );
+  // A week that spans the new year.
+  assert.deepEqual(
+    periodRange("week", local(2027, 1, 1)).start,
+    local(2026, 12, 28),
+  );
+});
+
+test("same-day checks and period comparisons", () => {
+  assert.equal(
+    sameLocalDay(local(2026, 10, 22, 0), local(2026, 10, 22, 23)),
+    true,
+  );
+  assert.equal(
+    sameLocalDay(local(2026, 10, 22, 23), local(2026, 10, 23, 0)),
+    false,
+  );
+  assert.equal(percentChange(1500, 1000), 50);
+  assert.equal(percentChange(500, 1000), -50);
+  assert.equal(percentChange(500, 0), null, "nothing to compare with");
+});
+
+test("the form shows profit per unit and keeps a saved cost", () => {
+  assert.deepEqual(draftMargin({ price: "10.00", cost: "7.50" }), {
+    profitCents: 250,
+    percent: 25,
+  });
+  assert.deepEqual(draftMargin({ price: "5.00", cost: "6.00" }), {
+    profitCents: -100,
+    percent: -20,
+  });
+  assert.equal(draftMargin({ price: "5.00", cost: "" }), null);
+  assert.equal(draftMargin({ price: "", cost: "1" }), null);
+  const costed = {
+    ...sugar,
+    variants: [{ ...sugar.variants[0], cost_cents: 75 }],
+  };
+  const draft = draftFromProduct(costed, () => "new");
+  assert.equal(draft.variants[0].cost, "0.75");
+  const result = validateProductDraft(draft);
+  assert.equal(result.input.variants[0].cost_cents, 75);
+  // Clearing the field clears the cost.
+  const cleared = productFormReducer(draft, {
+    type: "set-variant",
+    key: "v1",
+    field: "cost",
+    value: " ",
+  });
+  assert.equal(
+    validateProductDraft(cleared).input.variants[0].cost_cents,
+    null,
+  );
 });
