@@ -9,9 +9,11 @@ import {
   usePalette,
 } from "@/components/shop-ui";
 import { formatVariantLabel, isCountUnit, parseSize } from "@/domain/units";
-import type {
-  VariantDraft,
-  VariantField,
+import { formatMoney } from "@/lib/money";
+import {
+  draftMargin,
+  type VariantDraft,
+  type VariantField,
 } from "@/features/products/product-form";
 import { UnitPicker } from "@/features/products/components/unit-picker";
 
@@ -26,7 +28,7 @@ function previewLabel(variant: VariantDraft): string | null {
   }
 }
 
-/** One size of a product: amount and unit, price, stock, and barcode. */
+/** One size of a product: amount and unit, price, cost, stock, and barcode. */
 export function VariantEditor({
   index,
   variant,
@@ -49,6 +51,8 @@ export function VariantEditor({
   const c = usePalette();
   const label = previewLabel(variant);
   const counted = isCountUnit(variant.unit);
+  const margin = draftMargin(variant);
+  const loss = !!margin && margin.profitCents < 0;
   return (
     <Card>
       <View style={ui.spread}>
@@ -123,6 +127,62 @@ export function VariantEditor({
           />
         </View>
       </View>
+      <View style={[ui.row, { alignItems: "flex-start" }]}>
+        <View style={ui.grow}>
+          <Field
+            label="Cost price (optional)"
+            placeholder="0.00"
+            keyboardType="decimal-pad"
+            value={variant.cost}
+            onChangeText={(value) => onChange("cost", value)}
+            maxLength={18}
+            editable={!disabled}
+            error={errors.cost}
+          />
+        </View>
+        <View
+          style={[ui.grow, ui.field]}
+          accessible
+          accessibilityLabel={
+            margin
+              ? `${loss ? "Loss" : "Profit"} per unit ${formatMoney(Math.abs(margin.profitCents))}`
+              : "Profit per unit not available until cost and price are entered"
+          }
+        >
+          <Text style={[ui.fieldLabel, { color: c.muted }]}>
+            {loss ? "Loss per unit" : "Profit per unit"}
+          </Text>
+          <View
+            style={[
+              ui.inputFrame,
+              {
+                backgroundColor: loss ? c.dangerTint : c.tint,
+                borderColor: "transparent",
+              },
+            ]}
+          >
+            <Text
+              numberOfLines={1}
+              style={[
+                ui.money,
+                {
+                  fontSize: 15,
+                  color: loss ? c.danger : margin ? c.accent : c.faint,
+                },
+              ]}
+            >
+              {margin
+                ? `${formatMoney(Math.abs(margin.profitCents))}${margin.percent === null ? "" : ` · ${margin.percent}%`}`
+                : "—"}
+            </Text>
+          </View>
+        </View>
+      </View>
+      {loss && (
+        <Text style={[ui.caption, { color: c.danger, marginTop: -4 }]}>
+          The cost is higher than the selling price, so each sale loses money.
+        </Text>
+      )}
       <Field
         label="Barcode (optional)"
         placeholder="Scan or type"

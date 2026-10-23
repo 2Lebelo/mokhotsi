@@ -723,3 +723,289 @@ test("corrections are capped per product and removals return their image files",
   ]);
   assert.equal(f.store.embeddings.countsByProduct(MODEL).get(sugar), 3);
 });
+
+// Local-time constructor, so period boundaries hold in any time zone.
+const local = (y, m, d, h = 0) => new Date(y, m - 1, d, h);
+
+/** Sells the given [variantId, quantity] pairs as one cash sale at `at`. */
+function sell(store, lines, at = new Date()) {
+  for (const [variantId, quantity] of lines)
+    store.cart.setQuantity(variantId, quantity);
+  return store.sales.checkout(randomUUID(), undefined, at);
+}
+
+test("upgrading a v5 database adds cost prices and reversals without touching sales", (t) => {
+  const f = fixture(t, { migrate: false });
+  for (const migration of MIGRATIONS.slice(0, 5))
+    f.db.withTransactionSync(() => {
+      migration.up(f.db);
+      f.db.execSync(`PRAGMA user_version = ${migration.version}`);
+    });
+  const now = new Date().toISOString();
+  f.db.runSync(
+    "INSERT INTO products (id, name, category, created_at, updated_at) VALUES ('p1', 'Bread', 'Bakery', ?, ?)",
+    now,
+    now,
+  );
+  f.db.runSync(
+    "INSERT INTO product_variants (id, product_id, size_milli, unit, price_cents, stock, created_at, updated_at) VALUES ('v1', 'p1', 1000, 'pcs', 1500, 4, ?, ?)",
+    now,
+    now,
+  );
+  f.db.runSync(
+    "INSERT INTO sales (id, total_cents, tendered_cents, change_cents, created_at) VALUES ('s1', 1500, 2000, 500, ?)",
+    now,
+  );
+  f.db.runSync(
+    "INSERT INTO sale_items (id, sale_id, product_id, variant_id, product_name, variant_label, category, quantity, unit_price_cents, line_total_cents) VALUES ('i1', 's1', 'p1', 'v1', 'Bread', 'Each', 'Bakery', 1, 1500, 1500)",
+  );
+  migrateDatabase(f.db);
+  assert.equal(
+    f.db.getFirstSync("PRAGMA user_version").user_version,
+    SCHEMA_VERSION,
+  );
+  assert.equal(f.store.catalogue.variant("v1").cost_cents, null);
+  const [sale] = f.store.sales.list();
+  assert.equal(sale.total_cents, 1500);
+  assert.equal(sale.change_cents, 500);
+  assert.equal(sale.refunded_cents, 0);
+  assert.equal(sale.reversed_count, 0);
+  const [line] = f.store.sales.items("s1");
+  assert.equal(line.unit_cost_cents, null);
+  assert.equal(line.reversed_quantity, 0);
+  // Older receipts can still be reversed.
+  f.store.sales.reverse(
+    randomUUID(),
+    "s1",
+    [{ saleItemId: "i1", quantity: 1, restock: true }],
+    "Customer return",
+  );
+  assert.equal(f.store.catalogue.variant("v1").stock, 5);
+});
+
+test("a sale keeps the cost it was sold at, and costs can be cleared", (t) => {
+  const f = fixture(t);
+  const { productId, variantId } = saveOne(
+    f.store,
+    {},
+    { price_cents: 3000, cost_cents: 2000 },
+  );
+  assert.equal(f.store.catalogue.variant(variantId).cost_cents, 2000);
+  const saleId = sell(f.store, [[variantId, 2]]);
+  f.store.catalogue.saveProduct(
+    product({}, [size({ id: variantId, price_cents: 3000, cost_cents: 2500 })]),
+    productId,
+  );
+  assert.equal(f.store.catalogue.variant(variantId).cost_cents, 2500);
+  assert.equal(f.store.sales.items(saleId)[0].unit_cost_cents, 2000);
+  // Saving without a cost clears it; a negative cost is rejected.
+  f.store.catalogue.saveProduct(
+    product({}, [size({ id: variantId, price_cents: 3000 })]),
+    productId,
+  );
+  assert.equal(f.store.catalogue.variant(variantId).cost_cents, null);
+  assert.throws(
+    () =>
+      f.store.catalogue.saveProduct(
+        product({}, [size({ id: variantId, cost_cents: -1 })]),
+        productId,
+      ),
+    /Cost price/,
+  );
+});
+
+test("reversing a sale refunds cash, restocks or writes off each line, and never refunds twice", (t) => {
+  const f = fixture(t);
+  const a = saveOne(
+    f.store,
+    { name: "Apples" },
+    { price_cents: 1000, stock: 10 },
+  );
+  const b = saveOne(f.store, { name: "Bread" }, { price_cents: 500, stock: 5 });
+  const saleId = sell(f.store, [
+    [a.variantId, 3],
+    [b.variantId, 2],
+  ]);
+  const lineOf = (variantId) =>
+    f.store.sales.items(saleId).find((item) => item.variant_id === variantId);
+  const reversalId = randomUUID();
+  const lines = [
+    { saleItemId: lineOf(a.variantId).id, quantity: 1, restock: true },
+    { saleItemId: lineOf(b.variantId).id, quantity: 1, restock: false },
+  ];
+  f.store.sales.reverse(reversalId, saleId, lines, "  Customer return ");
+  f.store.sales.reverse(reversalId, saleId, lines, "Customer return");
+  assert.equal(f.store.catalogue.variant(a.variantId).stock, 8, "restocked");
+  assert.equal(f.store.catalogue.variant(b.variantId).stock, 3, "written off");
+  let [sale] = f.store.sales.list();
+  assert.equal(sale.total_cents, 4000, "the sale itself is unchanged");
+  assert.equal(sale.refunded_cents, 1500);
+  assert.equal(sale.reversed_count, 2);
+  assert.equal(lineOf(a.variantId).reversed_quantity, 1);
+  const [reversal] = f.store.sales.reversals(saleId);
+  assert.equal(reversal.reason, "Customer return");
+  assert.equal(reversal.refund_cents, 1500);
+
+  assert.throws(
+    () =>
+      f.store.sales.reverse(
+        randomUUID(),
+        saleId,
+        [{ saleItemId: lineOf(a.variantId).id, quantity: 3, restock: true }],
+        "Wrong item",
+      ),
+    /Only 2 of Apples/,
+  );
+  f.store.sales.reverse(
+    randomUUID(),
+    saleId,
+    [
+      { saleItemId: lineOf(a.variantId).id, quantity: 2, restock: true },
+      { saleItemId: lineOf(b.variantId).id, quantity: 1, restock: true },
+    ],
+    "Wrong item",
+  );
+  [sale] = f.store.sales.list();
+  assert.equal(sale.refunded_cents, 4000);
+  assert.equal(sale.reversed_count, sale.item_count);
+  assert.equal(f.store.catalogue.variant(a.variantId).stock, 10);
+  assert.equal(f.store.catalogue.variant(b.variantId).stock, 4);
+  assert.throws(
+    () =>
+      f.store.sales.reverse(
+        randomUUID(),
+        saleId,
+        [{ saleItemId: lineOf(b.variantId).id, quantity: 1, restock: true }],
+        "Wrong item",
+      ),
+    /already fully reversed/,
+  );
+  assert.equal(f.store.sales.reversals(saleId).length, 2);
+});
+
+test("reversals need a reason, today's sale, and valid lines, and roll back on failure", (t) => {
+  const f = fixture(t);
+  const { variantId } = saveOne(f.store, {}, { stock: 5 });
+  const today = local(2026, 10, 22, 15);
+  const saleId = sell(f.store, [[variantId, 2]], today);
+  const [line] = f.store.sales.items(saleId);
+  const one = [{ saleItemId: line.id, quantity: 1, restock: true }];
+  const reverse = (lines, reason = "Wrong item", now = today) =>
+    f.store.sales.reverse(randomUUID(), saleId, lines, reason, now);
+
+  assert.throws(() => reverse(one, "   "), /reason/);
+  assert.throws(() => reverse([]), /at least one item/);
+  assert.throws(
+    () => reverse([{ ...one[0], quantity: 0 }]),
+    /at least one item/,
+  );
+  assert.throws(() => reverse([{ ...one[0], quantity: -1 }]), /Quantity/);
+  assert.throws(() => reverse([...one, ...one]), /only once/);
+  assert.throws(
+    () => reverse([{ ...one[0], saleItemId: "missing" }]),
+    /not on the receipt/,
+  );
+  assert.throws(
+    () => reverse(one, "Wrong item", local(2026, 10, 23, 0)),
+    /Only today's sales/,
+  );
+  assert.throws(
+    () =>
+      f.store.sales.reverse(randomUUID(), "missing", one, "Wrong item", today),
+    /no longer exists/,
+  );
+
+  f.db.execSync(
+    "CREATE TRIGGER fail_reversal BEFORE INSERT ON sale_reversal_items BEGIN SELECT RAISE(ABORT, 'simulated storage failure'); END;",
+  );
+  assert.throws(() => reverse(one), /simulated storage failure/);
+  f.db.execSync("DROP TRIGGER fail_reversal");
+  assert.equal(f.store.sales.reversals(saleId).length, 0);
+  assert.equal(f.store.catalogue.variant(variantId).stock, 3);
+  reverse(one);
+  assert.equal(f.store.catalogue.variant(variantId).stock, 4);
+});
+
+test("reports measure net takings, profit, write-offs, and the previous period", (t) => {
+  const f = fixture(t);
+  const now = local(2026, 10, 22, 15); // a Thursday
+  const apples = saveOne(
+    f.store,
+    { name: "Apples" },
+    { price_cents: 1000, cost_cents: 600, stock: 20 },
+  );
+  const bread = saveOne(f.store, { name: "Bread" }, { price_cents: 500 });
+  const candles = saveOne(
+    f.store,
+    { name: "Candles" },
+    { price_cents: 300, cost_cents: 400 },
+  );
+  sell(f.store, [[apples.variantId, 1]], local(2026, 10, 21, 12));
+  const saleId = sell(
+    f.store,
+    [
+      [apples.variantId, 3],
+      [bread.variantId, 2],
+      [candles.variantId, 1],
+    ],
+    now,
+  );
+  const appleLine = f.store.sales
+    .items(saleId)
+    .find((item) => item.variant_id === apples.variantId);
+  f.store.sales.reverse(
+    randomUUID(),
+    saleId,
+    [{ saleItemId: appleLine.id, quantity: 1, restock: true }],
+    "Customer return",
+    now,
+  );
+  f.store.sales.reverse(
+    randomUUID(),
+    saleId,
+    [{ saleItemId: appleLine.id, quantity: 1, restock: false }],
+    "Damaged or expired",
+    now,
+  );
+
+  const today = f.store.reports.summary("today", now);
+  assert.equal(today.gross_cents, 4300);
+  assert.equal(today.refunds_cents, 2000);
+  assert.equal(today.net_cents, 2300);
+  assert.equal(today.sale_count, 1);
+  // One apple kept (+400), one candle below cost (−100), one apple written off (−600).
+  assert.equal(today.profit_cents, -300);
+  assert.equal(today.costed_revenue_cents, 1300);
+  assert.equal(today.writeoff_cents, 600);
+  assert.equal(today.uncosted_units, 2, "bread has no cost price");
+  assert.equal(today.previous_net_cents, 1000);
+  assert.equal(today.previous_profit_cents, 400);
+  assert.equal(f.store.sales.dashboard(now).today_total, 2300);
+  assert.equal(f.store.sales.dashboard(now).today_sales, 1);
+
+  const week = f.store.reports.summary("week", now);
+  assert.equal(week.net_cents, 3300);
+  assert.equal(week.profit_cents, 100);
+  assert.equal(week.sale_count, 2);
+  assert.equal(week.previous_net_cents, 0);
+  assert.equal(f.store.reports.summary("quarter", now).net_cents, 3300);
+
+  const rows = f.store.reports.products("today", now);
+  assert.deepEqual(
+    rows.map((row) => [
+      row.product_name,
+      row.units,
+      row.net_cents,
+      row.profit_cents,
+      row.writeoff_cents,
+    ]),
+    [
+      ["Bread", 2, 1000, null, 0],
+      ["Apples", 1, 1000, -200, 600],
+      ["Candles", 1, 300, -100, 0],
+    ],
+  );
+  assert.equal(rows[0].variant_label, "2.5 kg");
+  assert.equal(rows[0].uncosted_units, 2);
+  assert.deepEqual(f.store.reports.products("today", local(2026, 10, 24)), []);
+});

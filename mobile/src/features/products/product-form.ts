@@ -15,7 +15,13 @@ import { parsePrice, parseStock, priceInput } from "../../lib/money.ts";
 // Form state is kept as typed text so the cashier's input is never reformatted
 // while typing; it is parsed once, on save, by validateProductDraft.
 
-export type VariantField = "size" | "unit" | "price" | "stock" | "barcode";
+export type VariantField =
+  | "size"
+  | "unit"
+  | "price"
+  | "cost"
+  | "stock"
+  | "barcode";
 
 export type VariantDraft = {
   /** Stable React key; equals `id` for saved sizes. */
@@ -24,6 +30,8 @@ export type VariantDraft = {
   size: string;
   unit: string;
   price: string;
+  /** Blank means no cost price is recorded. */
+  cost: string;
   stock: string;
   barcode: string;
 };
@@ -53,7 +61,8 @@ export type DraftErrors = {
 };
 
 export type DraftValidation =
-  { ok: true; input: ProductInput } | { ok: false; errors: DraftErrors };
+  | { ok: true; input: ProductInput }
+  | { ok: false; errors: DraftErrors };
 
 function newVariant(key: string, unit = DEFAULT_UNIT): VariantDraft {
   return {
@@ -62,6 +71,7 @@ function newVariant(key: string, unit = DEFAULT_UNIT): VariantDraft {
     size: unit === DEFAULT_UNIT ? "1" : "",
     unit,
     price: "",
+    cost: "",
     stock: "",
     barcode: "",
   };
@@ -91,6 +101,7 @@ export function draftFromProduct(
       size: sizeInput(variant.size_milli),
       unit: variant.unit,
       price: priceInput(variant.price_cents),
+      cost: variant.cost_cents == null ? "" : priceInput(variant.cost_cents),
       stock: String(variant.stock),
       barcode: variant.barcode ?? "",
     })),
@@ -171,6 +182,9 @@ export function validateProductDraft(draft: ProductDraft): DraftValidation {
       fail("size"),
     );
     const price = attempt(() => parsePrice(draftVariant.price), fail("price"));
+    const cost = draftVariant.cost.trim()
+      ? attempt(() => parsePrice(draftVariant.cost), fail("cost"))
+      : null;
     const stock = attempt(() => parseStock(draftVariant.stock), fail("stock"));
     const barcode = normalizeBarcode(draftVariant.barcode);
 
@@ -195,6 +209,7 @@ export function validateProductDraft(draft: ProductDraft): DraftValidation {
         size_milli: size!,
         unit: draftVariant.unit,
         price_cents: price!,
+        cost_cents: cost!,
         stock: stock!,
         barcode,
       });
@@ -215,4 +230,21 @@ export function validateProductDraft(draft: ProductDraft): DraftValidation {
       variants,
     },
   };
+}
+
+/** Profit per unit for a size being edited, or null until price and cost both parse. */
+export function draftMargin(
+  variant: Pick<VariantDraft, "price" | "cost">,
+): { profitCents: number; percent: number | null } | null {
+  if (!variant.cost.trim()) return null;
+  try {
+    const price = parsePrice(variant.price);
+    const cost = parsePrice(variant.cost);
+    return {
+      profitCents: price - cost,
+      percent: price > 0 ? Math.round(((price - cost) / price) * 100) : null,
+    };
+  } catch {
+    return null;
+  }
 }
