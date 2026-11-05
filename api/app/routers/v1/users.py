@@ -1,27 +1,30 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.core.deps import (
     Caller,
     DbDep,
     IfMatchDep,
     PendingCallerDep,
+    SettingsDep,
     etag,
     require_permission,
 )
 from app.core.errors import error_responses
-from app.core.idempotency import IDEMPOTENCY_OPTIONAL, IdempotentRoute
+from app.core.idempotency import IDEMPOTENCY_OPTIONAL, IDEMPOTENCY_UNSUPPORTED, IdempotentRoute
 from app.core.pagination import Page, PageParams, make_page, page_params
 from app.core.permissions import Perm, Role
+from app.schemas.auth import UserStatus
 from app.schemas.users import (
     MeOut,
-    PasswordChange,
-    PasswordResetCreate,
+    PinChange,
+    PinResetOut,
+    ReviewCreate,
     UserCreate,
+    UserCreated,
     UserOut,
-    UserStatus,
     UserUpdate,
 )
 from app.services import user_service
@@ -33,7 +36,7 @@ ReadUsers = Annotated[Caller, Depends(require_permission(Perm.USERS_READ))]
 WriteUsers = Annotated[Caller, Depends(require_permission(Perm.USERS_WRITE))]
 
 
-# --- The caller's own account (allowed while a temporary password is pending). ---
+# --- The caller's own account (allowed while pending approval or with a temporary PIN). ---
 
 
 @router.get("/me", response_model=MeOut, responses=error_responses(401), summary="Your profile")
@@ -42,23 +45,26 @@ async def get_me(db: DbDep, caller: PendingCallerDep) -> MeOut:
 
 
 @router.put(
-    "/me/password",
+    "/me/pin",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses=error_responses(401, 422),
-    summary="Change your password (signs out your other devices)",
+    responses=error_responses(401, 409, 422, 429),
+    summary="Change your PIN in every shop (signs out your other phones)",
+    description="`pin_taken` (409): someone in one of your shops has that PIN; choose another.",
 )
-async def change_my_password(db: DbDep, caller: PendingCallerDep, body: PasswordChange) -> None:
-    await user_service.change_own_password(db, caller, body.current_password, body.new_password)
+async def change_my_pin(
+    request: Request, db: DbDep, settings: SettingsDep, caller: PendingCallerDep, body: PinChange
+) -> None:
+    await user_service.change_own_pin(request, db, settings, caller, body.current_pin, body.new_pin)
 
 
-# --- User management (system admin). ---
+# --- User management and owner approval (system admin). ---
 
 
 @router.get(
     "",
     response_model=Page[UserOut],
     responses=error_responses(400, 401, 403),
-    summary="List users",
+    summary="List users (the approval queue: role=owner&status=pending)",
 )
 async def list_users(
     db: DbDep,
@@ -66,7 +72,7 @@ async def list_users(
     params: Annotated[PageParams, Depends(page_params)],
     role: Role | None = None,
     status: UserStatus | None = None,
-    q: Annotated[str | None, Query(max_length=100, description="Email prefix or name")] = None,
+    q: Annotated[str | None, Query(max_length=100, description="Name or phone digits")] = None,
 ) -> Page[UserOut]:
     docs, next_cursor = await user_service.list_users(db, params, role, status, q)
     return make_page([to_out(d) for d in docs], next_cursor, params.limit)
@@ -74,19 +80,20 @@ async def list_users(
 
 @router.post(
     "",
-    response_model=UserOut,
+    response_model=UserCreated,
     status_code=status.HTTP_201_CREATED,
     responses=error_responses(401, 403, 409, 422),
-    openapi_extra=IDEMPOTENCY_OPTIONAL,
-    summary="Create a user (they must change the initial password on first sign-in)",
+    openapi_extra=IDEMPOTENCY_UNSUPPORTED,
+    summary="Add an approved owner or an admin (returns a temporary PIN once)",
 )
 async def create_user(
-    db: DbDep, caller: WriteUsers, body: UserCreate, response: Response
-) -> UserOut:
-    doc = await user_service.create_user(db, caller, body)
+    db: DbDep, settings: SettingsDep, caller: WriteUsers, body: UserCreate, response: Response
+) -> UserCreated:
+    doc, pin = await user_service.create_user(db, settings, caller, body)
     response.headers["Location"] = f"/api/v1/users/{doc['_id']}"
     response.headers["ETag"] = etag(doc["version"])
-    return to_out(doc)
+    response.headers["Cache-Control"] = "no-store"
+    return UserCreated(user=to_out(doc), temporary_pin=pin)
 
 
 @router.get(
@@ -105,7 +112,7 @@ async def get_user(user_id: UUID, db: DbDep, _: ReadUsers, response: Response) -
     "/{user_id}",
     response_model=UserOut,
     responses=error_responses(401, 403, 404, 409, 412, 422),
-    summary="Update a user's name, role or status",
+    summary="Rename a user, or disable / re-enable them",
 )
 async def update_user(
     user_id: UUID,
@@ -131,14 +138,31 @@ async def deactivate_user(user_id: UUID, db: DbDep, caller: WriteUsers) -> None:
 
 
 @router.post(
-    "/{user_id}/password-resets",
-    status_code=status.HTTP_204_NO_CONTENT,
-    responses=error_responses(401, 403, 404, 422),
+    "/{user_id}/reviews",
+    response_model=UserOut,
+    responses=error_responses(401, 403, 404, 409, 422),
     openapi_extra=IDEMPOTENCY_OPTIONAL,
-    summary="Set a temporary password (must be changed at next sign-in)",
+    summary="Approve or reject a pending owner",
+    description="A decision is final: reviewing an owner who is no longer pending is a 409.",
 )
-async def reset_password(
-    user_id: UUID, db: DbDep, caller: WriteUsers, body: PasswordResetCreate
-) -> None:
+async def review_owner(
+    user_id: UUID, db: DbDep, caller: WriteUsers, body: ReviewCreate, response: Response
+) -> UserOut:
+    doc = await user_service.review_owner(db, caller, user_id, body)
+    response.headers["ETag"] = etag(doc["version"])
+    return to_out(doc)
+
+
+@router.post(
+    "/{user_id}/pin-resets",
+    response_model=PinResetOut,
+    responses=error_responses(401, 403, 404, 409),
+    openapi_extra=IDEMPOTENCY_UNSUPPORTED,
+    summary="Give a user a temporary PIN (shown once; they must change it at sign-in)",
+)
+async def reset_pin(
+    user_id: UUID, db: DbDep, caller: WriteUsers, response: Response
+) -> PinResetOut:
     await user_service.get_user(db, user_id)
-    await user_service.reset_password(db, caller.actor, user_id, body.new_password)
+    response.headers["Cache-Control"] = "no-store"
+    return PinResetOut(temporary_pin=await user_service.reset_pin(db, caller.actor, user_id))

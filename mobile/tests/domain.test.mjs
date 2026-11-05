@@ -23,6 +23,8 @@ import {
 import {
   draftFromProduct,
   draftMargin,
+  lostPhotoMessage,
+  lostPhotoSlots,
   productFormReducer,
   validateProductDraft,
 } from "../src/features/products/product-form.ts";
@@ -280,6 +282,14 @@ test("editing a product keeps saved size ids", () => {
     result.input.variants.map((v) => v.id),
     ["v1", "v2"],
   );
+  // The stock shown when the form opened goes with the edit, so it saves as a difference.
+  assert.deepEqual(
+    result.input.variants.map((v) => [v.stock, v.stock_baseline]),
+    [
+      [5, 5],
+      [5, 5],
+    ],
+  );
 });
 
 test("cash received is compared with the total to give change", () => {
@@ -355,6 +365,53 @@ test("a lone second photo becomes the product's main photo", () => {
   result = validateProductDraft(draft);
   assert.equal(result.input.photo_uri, "file:///a.jpg");
   assert.equal(result.input.photo2_uri, "file:///b.jpg");
+});
+
+test("only photos added in the form are reported lost", () => {
+  const onDisk = new Set(["file:///staged/a.jpg"]);
+  const exists = (uri) => onDisk.has(uri);
+  const kept = ["file:///synced/old.jpg", null];
+
+  // A kept photo still downloading from another phone is never reported lost.
+  assert.deepEqual(
+    lostPhotoSlots({ photo: "file:///synced/old.jpg", photo2: null }, kept, exists),
+    [],
+  );
+  assert.deepEqual(
+    lostPhotoSlots({ photo: "file:///staged/a.jpg", photo2: null }, kept, exists),
+    [],
+  );
+  assert.deepEqual(
+    lostPhotoSlots(
+      { photo: "file:///staged/a.jpg", photo2: "file:///staged/gone.jpg" },
+      kept,
+      exists,
+    ),
+    ["photo2"],
+  );
+  assert.deepEqual(
+    lostPhotoSlots(
+      { photo: "file:///staged/x.jpg", photo2: "file:///staged/y.jpg" },
+      [],
+      exists,
+    ),
+    ["photo", "photo2"],
+  );
+});
+
+test("lost photos are named in plain words", () => {
+  assert.equal(
+    lostPhotoMessage(["photo"]),
+    "The front photo is no longer on this phone. Please add it again.",
+  );
+  assert.equal(
+    lostPhotoMessage(["photo2"]),
+    "The second photo is no longer on this phone. Please add it again.",
+  );
+  assert.equal(
+    lostPhotoMessage(["photo", "photo2"]),
+    "Both photos are no longer on this phone. Please add them again.",
+  );
 });
 
 // Local-time constructors keep these tests independent of the machine's time zone.

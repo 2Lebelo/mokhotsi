@@ -69,7 +69,7 @@ export class CartRepository {
       // Reducing an over-stock quantity is always allowed so the cart can be fixed.
       if (quantity > variant.stock && quantity >= current)
         throw new Error(
-          variant.stock === 0
+          variant.stock <= 0
             ? `${name} is out of stock. Update its stock to sell it.`
             : `Only ${variant.stock} of ${name} available. Update stock or reduce the quantity.`,
         );

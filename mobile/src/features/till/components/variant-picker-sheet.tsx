@@ -26,7 +26,7 @@ export function VariantPickerSheet({
     >
       <ScrollView contentContainerStyle={[ui.stack, { gap: 10 }]}>
         {product?.variants.map((variant) => {
-          const soldOut = variant.stock === 0;
+          const soldOut = variant.stock <= 0;
           return (
             <Pressable
               key={variant.id}

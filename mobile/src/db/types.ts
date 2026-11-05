@@ -1,3 +1,9 @@
+import type {
+  EmbeddingDeletePayload,
+  OpPayload,
+  SyncEntity,
+} from "../contracts/sync.ts";
+
 export type Product = {
   id: string;
   name: string;
@@ -6,6 +12,9 @@ export type Product = {
   photo_uri: string | null;
   /** An optional second angle, used only for visual matching. */
   photo2_uri: string | null;
+  /** Content hashes of the photos (sha256 hex): how they are synced. Null until hashed. */
+  photo_hash: string | null;
+  photo2_hash: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -19,7 +28,10 @@ export type Variant = {
   price_cents: number;
   /** What the shop paid per unit; null when not set. */
   cost_cents: number | null;
+  /** This phone's figure: the server's, plus movements not yet acknowledged. Can be negative. */
   stock: number;
+  /** Stock as last reported by the server; 0 until the shop syncs. */
+  server_stock: number;
   barcode: string | null;
   position: number;
   archived_at: string | null;
@@ -45,6 +57,11 @@ export type VariantInput = {
   /** Omitted or null means no cost price is recorded. */
   cost_cents?: number | null;
   stock: number;
+  /**
+   * The stock shown when the editor opened. Saving records the difference as a movement, so
+   * sales made meanwhile are kept. Omitted means the size's current stock.
+   */
+  stock_baseline?: number;
   barcode: string | null;
 };
 
@@ -54,6 +71,9 @@ export type ProductInput = {
   photo_uri: string | null;
   /** Omitted means no second photo. */
   photo2_uri?: string | null;
+  /** Content hashes of the photos; omitted means not hashed yet (reconcile catches up). */
+  photo_hash?: string | null;
+  photo2_hash?: string | null;
   variants: VariantInput[];
 };
 
@@ -65,6 +85,9 @@ export type Sale = {
   /** Cash handed over; null for sales recorded before cash was captured. */
   tendered_cents: number | null;
   change_cents: number | null;
+  /** Who sold it on which phone; "local" before the shop was registered. */
+  actor_user_id: string;
+  device_id: string;
   created_at: string;
   item_count: number;
   /** Cash given back through reversals; 0 when none. */
@@ -99,6 +122,8 @@ export type SaleReversal = {
   sale_id: string;
   reason: string;
   refund_cents: number;
+  actor_user_id: string;
+  device_id: string;
   created_at: string;
 };
 
@@ -164,6 +189,21 @@ export type EmbeddingInput = {
   source: EmbeddingSource;
   /** The product photo or saved crop the vector was computed from. */
   imageUri: string | null;
+  /** That image's content hash, which other phones download it by. */
+  imageSha256?: string | null;
+  /** A derived id (see sync/ids.ts); omitted means a new random id. */
+  id?: string;
+};
+
+/** A queued change waiting to be pushed to the server. */
+export type OutboxOp = {
+  seq: number;
+  op_id: string;
+  entity: SyncEntity;
+  entity_id: string;
+  op: "upsert" | "delete";
+  payload: OpPayload[SyncEntity] | EmbeddingDeletePayload;
+  created_at: string;
 };
 
 /** A stored view whose model version is outdated and whose image can be re-embedded. */
@@ -172,4 +212,28 @@ export type StaleEmbedding = {
   product_id: string;
   source: EmbeddingSource;
   image_uri: string;
+  image_sha256: string | null;
+};
+
+/** Something sync could not do as asked, for the owner to look at. */
+export type SyncIssue = {
+  id: string;
+  /** rejected: the server refused a change; flagged: it was kept but needs a look;
+   *  conflict: a change from another phone clashed with this phone's data. */
+  kind: "rejected" | "flagged" | "conflict";
+  entity: string;
+  entity_id: string;
+  op_id: string | null;
+  code: string;
+  message: string;
+  created_at: string;
+};
+
+/** An image this shop syncs by content hash. */
+export type SyncedFile = {
+  sha256: string;
+  kind: "photo" | "crop";
+  uri: string;
+  /** local: not uploaded yet; uploaded: in the cloud; missing: to download. */
+  state: "local" | "uploaded" | "missing";
 };

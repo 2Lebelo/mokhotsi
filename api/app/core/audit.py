@@ -17,7 +17,19 @@ from app.core.db import Database, Document, Session
 from app.core.request_meta import client_ip, request_id, user_agent
 from app.repositories import audit_logs
 
-REDACTED = frozenset({"password", "password_hash", "refresh_hash"})
+REDACTED = frozenset(
+    {
+        "password",
+        "password_hash",
+        "refresh_hash",
+        "pin",
+        "pin_hash",
+        "pin_tag",
+        "pin_key",
+        "device_secret",
+        "secret_hash",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,26 +38,26 @@ class Actor:
 
     id: UUID | None
     role: str | None
-    email: str | None
+    phone: str | None
     ip: str | None = None
     request_id: str | None = None
     user_agent: str | None = None
     device_id: UUID | None = None
 
     @classmethod
-    def anonymous(cls, request: Request, settings: Settings, email: str | None = None) -> "Actor":
+    def anonymous(cls, request: Request, settings: Settings, phone: str | None = None) -> "Actor":
         return cls(
             id=None,
             role=None,
-            email=email,
-            ip=client_ip(request, settings),
+            phone=phone,
+            ip=client_ip(request),
             request_id=request_id(request),
             user_agent=user_agent(request),
         )
 
     @classmethod
     def system(cls, source: str) -> "Actor":
-        return cls(id=None, role="system", email=None, user_agent=source)
+        return cls(id=None, role="system", phone=None, user_agent=source)
 
 
 def diff(before: Document, after: Document, fields: Iterable[str]) -> dict[str, dict[str, Any]]:
@@ -68,7 +80,7 @@ async def record(
     action: str,
     *,
     entity: str,
-    entity_id: UUID | None,
+    entity_id: UUID | str | None,  # A string for entities keyed by name, such as roles.
     shop_id: UUID | None = None,
     changes: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -85,7 +97,7 @@ async def record(
             "shop_id": shop_id,
             "actor_id": actor.id,
             "actor_role": actor.role,
-            "actor_email": actor.email,
+            "actor_phone": actor.phone,
             "changes": changes or None,
             "metadata": metadata or None,
             "request_id": actor.request_id,

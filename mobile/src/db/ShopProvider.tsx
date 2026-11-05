@@ -1,5 +1,5 @@
 import { randomUUID } from "expo-crypto";
-import { openDatabaseAsync, type SQLiteDatabase } from "expo-sqlite";
+import type { SQLiteDatabase } from "expo-sqlite";
 import {
   createContext,
   useCallback,
@@ -19,66 +19,88 @@ import {
   Notice,
   Screen,
 } from "@/components/shop-ui";
-import { DATABASE_NAME, migrateDatabase } from "@/db/schema";
-import { ShopStore } from "@/db/store";
+import {
+  acquireShopDatabase,
+  notifyLocalWrite,
+  onRemoteChange,
+  releaseShopDatabase,
+} from "@/db/shop-databases";
+import { ShopStore, type Actor, type StoreContext } from "@/db/store";
 
-type ShopContext = { store: ShopStore; revision: number; refresh: () => void };
+type ShopContext = {
+  store: ShopStore;
+  revision: number;
+  /** Call after changing the shop's data: screens re-read it, and sync sends it soon. */
+  refresh: () => void;
+};
 const Context = createContext<ShopContext | null>(null);
 
-export function ShopProvider({ children }: PropsWithChildren) {
+/**
+ * One shop's data: its own SQLite file (`databaseName`), changed by `actor`, the person at
+ * the till ("local" before the phone is registered). Mount it with `key` set to the shop,
+ * so switching shops never shows one shop's data under another. The connection is shared
+ * with sync (shop-databases.ts); what sync brings from other phones refreshes the screens.
+ */
+export function ShopProvider({
+  children,
+  databaseName,
+  actor,
+}: PropsWithChildren<{ databaseName: string; actor: Actor }>) {
   const [database, setDatabase] = useState<SQLiteDatabase | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [revision, setRevision] = useState(0);
-  const refresh = useCallback(() => setRevision((value) => value + 1), []);
+  const reread = useCallback(() => setRevision((value) => value + 1), []);
+  const refresh = useCallback(() => {
+    reread();
+    notifyLocalWrite(databaseName);
+  }, [reread, databaseName]);
 
   useEffect(() => {
     let cancelled = false;
-    let connection: SQLiteDatabase | undefined;
-    void (async () => {
-      try {
-        connection = await openDatabaseAsync(DATABASE_NAME, {
-          useNewConnection: true,
-        });
-        if (cancelled) {
-          await connection.closeAsync();
-          return;
-        }
-        migrateDatabase(connection);
-        setDatabase(connection);
-      } catch (cause) {
+    acquireShopDatabase(databaseName).then(
+      (connection) => {
+        if (!cancelled) setDatabase(connection);
+      },
+      (cause: unknown) => {
         if (!cancelled) setError(errorMessage(cause));
-      }
-    })();
+      },
+    );
     return () => {
       cancelled = true;
-      if (connection) void connection.closeAsync().catch(() => {});
+      releaseShopDatabase(databaseName);
     };
-  }, [attempt]);
+  }, [attempt, databaseName]);
+
+  useEffect(() => onRemoteChange(databaseName, reread), [databaseName, reread]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") refresh();
+      if (state === "active") reread();
     });
     // Refresh today's totals when a shop stays open over midnight.
-    const timer = setInterval(refresh, 60_000);
+    const timer = setInterval(reread, 60_000);
     return () => {
       subscription.remove();
       clearInterval(timer);
     };
-  }, [refresh]);
+  }, [reread]);
 
+  const context = useMemo<StoreContext>(
+    () => ({ newId: randomUUID, clock: () => new Date(), actor }),
+    [actor],
+  );
   const value = useMemo(
     // A new facade per revision keeps React Compiler's memoized reads current.
     () =>
       database
         ? {
-            store: new ShopStore(database, randomUUID, revision),
+            store: new ShopStore(database, context, revision),
             revision,
             refresh,
           }
         : null,
-    [database, revision, refresh],
+    [database, context, revision, refresh],
   );
   if (error)
     return (

@@ -33,6 +33,8 @@ export type VariantDraft = {
   /** Blank means no cost price is recorded. */
   cost: string;
   stock: string;
+  /** A saved size's stock when the form opened; the edit is saved as the difference. */
+  stockBaseline: number | null;
   barcode: string;
 };
 
@@ -73,6 +75,7 @@ function newVariant(key: string, unit = DEFAULT_UNIT): VariantDraft {
     price: "",
     cost: "",
     stock: "",
+    stockBaseline: null,
     barcode: "",
   };
 }
@@ -103,6 +106,7 @@ export function draftFromProduct(
       price: priceInput(variant.price_cents),
       cost: variant.cost_cents == null ? "" : priceInput(variant.cost_cents),
       stock: String(variant.stock),
+      stockBaseline: variant.stock,
       barcode: variant.barcode ?? "",
     })),
   };
@@ -206,6 +210,9 @@ export function validateProductDraft(draft: ProductDraft): DraftValidation {
     else
       variants.push({
         ...(draftVariant.id ? { id: draftVariant.id } : {}),
+        ...(draftVariant.id && draftVariant.stockBaseline !== null
+          ? { stock_baseline: draftVariant.stockBaseline }
+          : {}),
         size_milli: size!,
         unit: draftVariant.unit,
         price_cents: price!,
@@ -230,6 +237,32 @@ export function validateProductDraft(draft: ProductDraft): DraftValidation {
       variants,
     },
   };
+}
+
+export const PHOTO_SLOTS: readonly PhotoSlot[] = ["photo", "photo2"];
+
+/**
+ * Slots holding a photo added in this form (not one the product already had), whose file
+ * `exists` says is gone. Kept photos are not checked: a photo synced from another phone may
+ * still be downloading, and saving without touching it is correct.
+ */
+export function lostPhotoSlots(
+  draft: Pick<ProductDraft, PhotoSlot>,
+  kept: readonly (string | null | undefined)[],
+  exists: (uri: string) => boolean,
+): PhotoSlot[] {
+  return PHOTO_SLOTS.filter((slot) => {
+    const uri = draft[slot];
+    return !!uri && !kept.includes(uri) && !exists(uri);
+  });
+}
+
+/** What to tell the cashier when photos added in this form are no longer on the phone. */
+export function lostPhotoMessage(slots: readonly PhotoSlot[]): string {
+  if (slots.length > 1)
+    return "Both photos are no longer on this phone. Please add them again.";
+  const which = slots[0] === "photo2" ? "second" : "front";
+  return `The ${which} photo is no longer on this phone. Please add it again.`;
 }
 
 /** Profit per unit for a size being edited, or null until price and cost both parse. */

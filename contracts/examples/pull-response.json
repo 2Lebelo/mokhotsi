@@ -1,49 +1,59 @@
 {
-  "changes": {
-    "products": [
-      {
-        "id": "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b",
-        "name": "Maize meal 2.5kg",
-        "price_cents": 4599,
-        "barcode": "6001234567890",
-        "deleted": false,
-        "updated_at": "2026-10-06T09:15:00Z",
-        "seq": 41
-      }
-    ],
-    "embeddings": [
-      {
-        "id": "6b5a4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2d",
-        "product_id": "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b",
-        "vector_b64": "AACAPwAAAAAAAAAAAAAAAA==",
-        "dim": 4,
-        "model_version": "mobilenet_v2-224-1280@placeholder",
-        "deleted": false,
-        "created_at": "2026-10-06T09:16:02Z",
-        "seq": 42
-      }
-    ],
-    "sales": [
-      {
-        "id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
-        "device_id": "7d0f6a8e-2b1c-4f3a-9e5d-1a2b3c4d5e6f",
-        "total_cents": 9198,
-        "items": [
+  "changes": [
+    {
+      "seq": 38,
+      "entity": "products",
+      "record": {
+        "id": "a1b2c3d4-e5f6-4789-8abc-def012345678",
+        "name": "Maize meal",
+        "category": "Groceries",
+        "photos": [],
+        "updated_by": "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a",
+        "created_at": "2026-10-27T08:00:00.000Z",
+        "updated_at": "2026-10-27T08:00:00.000Z",
+        "variants": [
           {
-            "id": "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
-            "product_id": "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b",
-            "qty": 2,
-            "unit_price_cents": 4599,
-            "match_score": 0.91,
-            "match_method": "vision"
+            "id": "b2c3d4e5-f6a7-4890-9bcd-ef0123456789",
+            "size_milli": 2500,
+            "unit": "kg",
+            "price_cents": 4599,
+            "cost_cents": null,
+            "barcode": null,
+            "position": 0,
+            "archived_at": null
           }
-        ],
-        "deleted": false,
-        "created_at": "2026-10-06T09:20:31Z",
-        "seq": 43
+        ]
       }
-    ]
-  },
-  "next_cursor": "43",
+    },
+    {
+      "seq": 40,
+      "entity": "stock_levels",
+      "record": { "variant_id": "b2c3d4e5-f6a7-4890-9bcd-ef0123456789", "stock": 22 }
+    },
+    {
+      "seq": 41,
+      "entity": "embeddings",
+      "record": {
+        "id": "b8c9d0e1-f2a3-4456-9123-456789012345",
+        "product_id": "a1b2c3d4-e5f6-4789-8abc-def012345678",
+        "model_version": "mobilenetv2-imagenet@1",
+        "source": "photo",
+        "image_sha256": null,
+        "dim": 4,
+        "vector_f16": "zThmOgAAAAA=",
+        "created_at": "2026-10-27T08:01:00.000Z"
+      }
+    },
+    {
+      "seq": 42,
+      "entity": "embeddings",
+      "record": {
+        "id": "c9d0e1f2-a3b4-4567-8234-567890123456",
+        "product_id": "a1b2c3d4-e5f6-4789-8abc-def012345678",
+        "deleted": true
+      }
+    }
+  ],
+  "next_cursor": "42",
   "has_more": false
 }

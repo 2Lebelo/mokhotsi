@@ -6,10 +6,11 @@ from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
 
-from app.core.permissions import SITTER_GRANTABLE, MemberRole, Perm
-from app.schemas.common import Email, Name, Password, StrictModel
+from app.core.permissions import CASHIER_GRANTABLE, MemberRole, Perm
+from app.schemas.auth import NewPin, Pin
+from app.schemas.common import Name, StrictModel
 
-ShopStatus = Literal["active", "archived"]
+ShopStatus = Literal["active", "suspended"]
 
 
 class ShopOut(BaseModel):
@@ -26,11 +27,16 @@ class ShopOut(BaseModel):
 
 
 class ShopCreate(StrictModel):
+    """An approved owner opens a shop. Their PIN confirms it is them and becomes their PIN in
+    the new shop; the phone they are using is registered to the shop."""
+
     name: Name
-    owner_id: UUID | None = None  # Admins must set it; keepers may omit it (themselves).
+    pin: Pin
 
 
 class ShopUpdate(StrictModel):
+    """Owners rename their shops; only a system admin changes the status."""
+
     name: Name | None = None
     status: ShopStatus | None = None
 
@@ -44,17 +50,17 @@ class ShopUpdate(StrictModel):
 
 
 def _grantable(perms: list[Perm]) -> list[Perm]:
-    invalid = sorted(p.value for p in perms if p not in SITTER_GRANTABLE)
+    invalid = sorted(p.value for p in perms if p not in CASHIER_GRANTABLE)
     if invalid:
         raise ValueError(
-            f"Not grantable to a sitter: {', '.join(invalid)}. "
-            f"Grantable: {', '.join(sorted(p.value for p in SITTER_GRANTABLE))}"
+            f"Not grantable to a cashier: {', '.join(invalid)}. "
+            f"Grantable: {', '.join(sorted(p.value for p in CASHIER_GRANTABLE))}"
         )
     return sorted(set(perms))
 
 
 class MemberUser(BaseModel):
-    email: str
+    phone: str | None = None
     name: str
     status: str
 
@@ -64,7 +70,7 @@ class MemberOut(BaseModel):
     shop_id: UUID
     role: MemberRole
     granted_permissions: list[Perm]
-    permissions: list[Perm]  # Effective: defaults + granted (keepers: everything)
+    permissions: list[Perm]  # Effective: defaults + granted (owners: everything)
     user: MemberUser
     created_at: datetime
     updated_at: datetime
@@ -75,13 +81,21 @@ GrantablePerms = Annotated[list[Perm], AfterValidator(_grantable)]
 
 
 class MemberCreate(StrictModel):
-    """Creates a new shop-sitter account and adds it to the shop."""
+    """Creates a new cashier account and adds it to the shop. The PIN must be unique in the shop:
+    it alone identifies the cashier at the till."""
 
-    email: Email
     name: Name
-    password: Password
+    pin: NewPin
     permissions: GrantablePerms = Field(default_factory=list)
 
 
 class MemberUpdate(StrictModel):
     permissions: GrantablePerms
+
+
+class MemberPinReset(StrictModel):
+    pin: NewPin
+
+
+class DataClaimOut(BaseModel):
+    device_id: UUID = Field(description="The one phone whose offline data seeds this shop")

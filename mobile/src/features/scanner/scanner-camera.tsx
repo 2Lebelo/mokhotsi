@@ -5,7 +5,7 @@ import {
   type BarcodeScanningResult,
   type BarcodeType,
 } from "expo-camera";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Linking,
@@ -20,6 +20,7 @@ import {
 import { Button, font, ui, usePalette } from "@/components/shop-ui";
 import { normalizeBarcode, RETAIL_SYMBOLOGIES } from "@/domain/barcode";
 import type { Recognition } from "@/features/recognition/types";
+import { warmUpBeep } from "@/features/scan-beep";
 import { ScanGate } from "@/features/scanner/scan-gate";
 import { useCameraVisibility } from "@/features/scanner/use-camera-visibility";
 
@@ -47,6 +48,8 @@ export function ScannerCamera({
   const visible = useCameraVisibility();
   const [torch, setTorch] = useState(false);
   const [gate] = useState(() => new ScanGate());
+
+  useEffect(warmUpBeep, []);
 
   function handleBarcode(result: BarcodeScanningResult) {
     const code = normalizeBarcode(result.data);

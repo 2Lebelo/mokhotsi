@@ -53,7 +53,16 @@
       "expo-sqlite",
       ["react-native-fast-tflite", { "enableAndroidGpuLibraries": true }],
       ["expo-build-properties", { "android": { "minSdkVersion": 26 } }],
-      "./plugins/with-short-native-build-dirs"
+      "./plugins/with-short-native-build-dirs",
+      "expo-secure-store",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundPlayback": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

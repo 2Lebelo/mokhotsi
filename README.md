@@ -39,11 +39,14 @@ Remaining stubs are marked `TODO(feature)`.
 ## 1. Backend: `docker compose up`
 
 ```bash
-cp api/.env.example api/.env          # then set JWT_SECRET to a random 32+ char string
+cp api/.env.example api/.env          # then set JWT_SECRET, and SEED_ADMIN_PHONE/PIN/NAME
 docker compose up --build
-# There is no public sign-up. Create the first system admin once:
-docker compose exec api python -m app.cli create-admin --email you@example.com --name "Your Name"
+# There is no public sign-up. Create the first system admin (phone number + 5-digit PIN):
+docker compose exec api python -m app.cli seed-admin
 ```
+
+- `seed-admin` is idempotent: running it again leaves an existing admin unchanged. `--reset-pin` sets a new PIN from `SEED_ADMIN_PIN` and re-enables the account (recovery). `--additional` adds another admin. It never promotes an existing owner or cashier. Remove `SEED_ADMIN_PIN` from `.env` once the admin exists.
+- The `roles` collection (`system_admin`, `owner`, `cashier`) is created and kept in step with `app/core/permissions.py` at every API start (also `python -m app.cli seed-roles`). The code is the source of truth: a hand edit in the database is undone and audited, and a role the code drops is marked retired, never deleted. Data migrations (`schema_migrations`) run first, so a database written by an older version is upgraded before use.
 
 - API: <http://localhost:8000/docs> (OpenAPI). Health: <http://localhost:8000/health> → `{"status":"ok","mongo":"ok","redis":"ok"}`.
 - MongoDB 8 runs as a **single-node replica set** (the API uses transactions), and its data is kept in the `mongo-data` volume. Redis holds rate-limit counters only. `docker compose down -v` wipes everything.
@@ -57,10 +60,12 @@ docker compose up -d mongo redis      # replica-set MongoDB + Redis
 cd api
 uv sync
 cp .env.example .env                  # MONGO_URI must point at a replica set
-uv run python -m app.cli create-admin --email you@example.com --name "Your Name"
+uv run python -m app.cli seed-admin     # reads SEED_ADMIN_* from .env
 uv run uvicorn app.main:create_app --factory --reload --host 0.0.0.0 --port 8000
 uv run ruff check . && uv run ruff format --check . && uv run pytest
 ```
+
+`uv sync` installs the `app` package into `api/.venv` (editable), and settings always read `api/.env`, so these commands also work from another directory, e.g. `uv run --project api uvicorn app.main:create_app --factory` from the repo root.
 
 Tests do not read `api/.env`. They use a throwaway `mokhotsi_test` database (reset for each test client) and only the environment, so set `MONGO_URI` if Mongo isn't on `localhost:27017`. Tests that need MongoDB or Redis are skipped locally when those aren't reachable, but they fail in CI.
 
@@ -100,5 +105,6 @@ Colab notebooks go in `ml/notebooks/`. Export outputs go to `ml/artifacts/` (git
 
 - Layering, sync contract and data flow are in [docs/architecture.md](docs/architecture.md). Why SQLite + outbox: [ADR 0001](docs/adr/0001-offline-first-sqlite-outbox.md). Roles, tenancy and online management with offline selling: [ADR 0002](docs/adr/0002-roles-tenancy-hybrid-connectivity.md).
 - Every API mutation writes its audit-log entry in the same transaction (`in_transaction`), and authorization is checked by permission, never by role name.
-- Changing the wire format means changing `contracts/sync.schema.json`, `api/app/schemas/sync.py` and `mobile/src/contracts/sync.ts` together. The contract tests on both sides fail otherwise.
+- Changing the wire format means changing `contracts/sync.v2.schema.json`, `api/app/schemas/sync.py` and `mobile/src/contracts/sync.ts` together. The contract tests on both sides fail otherwise.
+- Product photos and correction crops are stored in Cloudinary. Set `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY` and `CLOUDINARY_API_SECRET` in `api/.env` (required in prod). In the Cloudinary console, enable **Settings → Security → Strict transformations** and restrict uploads to jpg/png/webp. Phones upload directly with signatures from the API; the API never handles image bytes.
 - No secrets in Git. Only `*.env.example` files are committed.

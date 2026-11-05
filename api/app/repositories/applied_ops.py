@@ -1,4 +1,8 @@
-"""Idempotency ledger for pushed ops: `_id` = op_id, expires 30 days after `applied_at`."""
+"""Idempotency ledger for pushed ops: `_id` = op_id, expires 180 days after `applied_at`.
+
+As long as the change feed (changes.py): a phone offline for months whose ack was lost can
+re-send an old product edit, and it must be recognised rather than applied over newer ones.
+"""
 
 from uuid import UUID
 
@@ -8,9 +12,11 @@ from app.core.clock import utcnow
 from app.core.db import Database, Session
 
 COLLECTION = "applied_ops"
-TTL_SECONDS = 30 * 24 * 60 * 60
+TTL_SECONDS = 180 * 24 * 60 * 60
 INDEXES = [
-    IndexModel([("applied_at", ASCENDING)], name="applied_at_ttl", expireAfterSeconds=TTL_SECONDS)
+    IndexModel(
+        [("applied_at", ASCENDING)], name="applied_at_ttl_180d", expireAfterSeconds=TTL_SECONDS
+    )
 ]
 
 

@@ -71,7 +71,7 @@ async function warmUp(model: TensorflowModel, shape: number[]): Promise<void> {
  */
 class VisionService {
   private models: Promise<VisionModels> | null = null;
-  private index: VectorIndex | null = null;
+  private index: { owner: object; index: VectorIndex } | null = null;
   private leases = 0;
   private backgroundStep: Promise<void> | null = null;
 
@@ -128,18 +128,29 @@ class VisionService {
     }
   }
 
-  /** The taught-view index for the current embedder version. */
+  /**
+   * The stored-view index of this shop for the current embedder version. Built on first use
+   * (camera screens do it while loading) and kept until `invalidate` or a different shop.
+   */
   vectorIndex(store: ShopStore): VectorIndex {
-    if (!this.index) {
-      const rows = store.embeddings.vectors(MANIFEST.embedder.model_version);
+    if (this.index?.owner !== store.identity) {
+      const version = MANIFEST.embedder.model_version;
       const index = new VectorIndex(
         MANIFEST.embedder.dim,
-        Math.max(rows.length, 1),
+        store.embeddings.count(version),
       );
-      for (const row of rows) index.add(row.productId, row.vector);
-      this.index = index;
+      store.embeddings.eachVector(version, (productId, blob) =>
+        index.addBlob(productId, blob),
+      );
+      this.index = { owner: store.identity, index };
     }
-    return this.index;
+    return this.index.index;
+  }
+
+  /** Adds one new view to a built index, instead of rebuilding it (a till correction). */
+  addToIndex(store: ShopStore, productId: string, vector: Float32Array): void {
+    if (this.index?.owner === store.identity)
+      this.index.index.add(productId, vector);
   }
 
   invalidate(): void {

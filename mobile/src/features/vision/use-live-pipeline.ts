@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Platform } from "react-native";
 import { useFrameOutput, type Frame } from "react-native-vision-camera";
 import {
   createResizer,
   type Resizer,
   type ResizerOptions,
 } from "react-native-vision-camera-resizer";
-import { createSynchronizable, scheduleOnRN } from "react-native-worklets";
+import {
+  createSynchronizable,
+  scheduleOnRN,
+  type Synchronizable,
+} from "react-native-worklets";
 
 import { squareCrop, type ScoredBox } from "@/ml/geometry";
 import {
@@ -18,7 +21,8 @@ import {
 import { pixelSource, sampleToTensor } from "@/ml/tensors";
 import { l2Normalize } from "@/ml/vector";
 import { decodeBestBox, holdBox } from "@/ml/yolo";
-import { MANIFEST, PIPELINE } from "@/features/vision/config";
+import { DEBUG_VISION, MANIFEST, PIPELINE } from "@/features/vision/config";
+import { disposeQuietly, retireWhenIdle } from "@/features/vision/retire";
 import type { EmbeddedView } from "@/features/vision/types";
 import type { VisionModels } from "@/features/vision/vision-service";
 
@@ -37,10 +41,24 @@ export type LiveCallbacks = {
   /** A held-still item was embedded (at most `max_per_second` times a second). */
   onView: (view: EmbeddedView) => void;
   onError: (message: string) => void;
+  /**
+   * The phone cannot run this pixel format (no frame has been processed yet): the
+   * caller should step down to the next camera mode rather than show an error.
+   */
+  onUnsupported: (message: string) => void;
 };
+
+/** "native": the camera's own format (PRIVATE GPU buffers on Android); "yuv": YUV 4:2:0. */
+export type LivePixelFormat = "native" | "yuv";
 
 type LoopState = {
   paused: boolean;
+  /** The pipeline is shutting down: no new frame may start (see useResizers). */
+  closed: boolean;
+  /** A frame is using the resizers right now; they are freed only once it is false. */
+  busy: boolean;
+  /** A frame has gone through the whole detector path: later errors are real errors. */
+  proven: boolean;
   /** Whether a box is on screen, for the show/keep score hysteresis. */
   shown: boolean;
   lastDetectAt: number;
@@ -71,38 +89,59 @@ const CROP_SOURCE_RESIZE: ResizerOptions = {
   pixelLayout: "interleaved",
 };
 
-// The resizer needs YUV on iOS; Android accepts the camera's native format directly.
-const PIXEL_FORMAT = Platform.OS === "ios" ? "yuv" : "native";
+type Resizers = { detector: Resizer; crop: Resizer };
 
-/** Creates a resizer for the lifetime of the component and frees its GPU pool after. */
-function useResizer(
-  options: ResizerOptions,
-  onError: (message: string) => void,
-) {
-  const [resizer, setResizer] = useState<Resizer | null>(null);
+/**
+ * Creates both resizers for the lifetime of the component and frees their GPU pools
+ * after. The camera thread may be mid-frame when the component unmounts, and freeing
+ * a resizer under it throws ("Previous GPUFrame is still active") or worse, so cleanup
+ * closes the loop to new frames first and frees the resizers once the last one is done.
+ */
+function useResizers(
+  loop: Synchronizable<LoopState>,
+  onUnsupported: (message: string) => void,
+): Resizers | null {
+  const [resizers, setResizers] = useState<Resizers | null>(null);
   useEffect(() => {
-    let created: Resizer | null = null;
+    let created: Resizer[] = [];
     let cancelled = false;
-    createResizer(options).then(
-      (value) => {
-        if (cancelled) {
-          value.dispose();
-          return;
-        }
-        created = value;
-        setResizer(value);
-      },
-      (error: unknown) => {
-        if (!cancelled) onError(`GPU resizer unavailable: ${String(error)}`);
-      },
-    );
+    void Promise.allSettled([
+      createResizer(DETECTOR_RESIZE),
+      createResizer(CROP_SOURCE_RESIZE),
+    ]).then(([detector, crop]) => {
+      if (
+        !cancelled &&
+        detector.status === "fulfilled" &&
+        crop.status === "fulfilled"
+      ) {
+        created = [detector.value, crop.value];
+        setResizers({ detector: detector.value, crop: crop.value });
+        return;
+      }
+      // No frame has seen these yet, so they can be freed straight away.
+      for (const result of [detector, crop])
+        if (result.status === "fulfilled") disposeQuietly(result.value);
+      const failure = [detector, crop].find((r) => r.status === "rejected");
+      // Without a resizer no frame can run, so a failure means "unsupported".
+      if (!cancelled && failure)
+        onUnsupported(`GPU resizer unavailable: ${String(failure.reason)}`);
+    });
     return () => {
       cancelled = true;
-      created?.dispose();
+      // After this returns no frame can claim the resizers (see onFrame).
+      loop.setBlocking((previous) => ({ ...previous, closed: true }));
+      retireWhenIdle(() => loop.getBlocking().busy, created, {
+        onGiveUp: () => {
+          if (__DEV__)
+            console.log(
+              "[vision] a frame never finished; the resizers are left to the garbage collector",
+            );
+        },
+      });
     };
-    // Options are module constants; onError is stable (see useLivePipeline).
-  }, [options, onError]);
-  return resizer;
+    // loop is per component; onUnsupported is stable (see useLivePipeline).
+  }, [loop, onUnsupported]);
+  return resizers;
 }
 
 /**
@@ -110,9 +149,11 @@ function useResizer(
  * camera thread: GPU resize → detector (throttled to `max_fps`) → stability →
  * crop → embedder (throttled to `max_per_second`). Frames arriving while it is
  * busy are dropped by the camera. Only small results cross to the JS thread.
+ * The iOS resizer needs "yuv"; Android takes either (see camera-ladder for the choice).
  */
 export function useLivePipeline(
   models: VisionModels,
+  pixelFormat: LivePixelFormat,
   callbacks: LiveCallbacks,
 ) {
   // Stable functions for the worklet to call back into, reading the latest props.
@@ -120,26 +161,45 @@ export function useLivePipeline(
   useEffect(() => {
     latest.current = callbacks;
   });
+  // Results the camera thread queued before unmounting must not reach the screen
+  // (e.g. a stale box from the camera mode just stepped down from).
+  const open = useRef(true);
+  useEffect(() => {
+    open.current = true;
+    return () => {
+      open.current = false;
+    };
+  }, []);
   const deliver = useMemo(
     () => ({
       detection: (d: LiveDetection) => {
-        console.log(
-          `[vision] detection score ${d.score?.toFixed(3) ?? "none"} · box ${d.box ? "shown" : "hidden"} · ${d.latencyMs} ms`,
-        );
+        if (!open.current) return;
+        if (DEBUG_VISION)
+          console.log(
+            `[vision] detection score ${d.score?.toFixed(3) ?? "none"} · box ${d.box ? "shown" : "hidden"} · ${d.latencyMs} ms`,
+          );
         latest.current.onDetection(d);
       },
-      view: (v: EmbeddedView) => latest.current.onView(v),
-      error: (m: string) => latest.current.onError(m),
+      view: (v: EmbeddedView) => {
+        if (open.current) latest.current.onView(v);
+      },
+      error: (m: string) => {
+        if (open.current) latest.current.onError(m);
+      },
+      unsupported: (m: string) => {
+        if (open.current) latest.current.onUnsupported(m);
+      },
     }),
     [],
   );
 
-  const detectorResizer = useResizer(DETECTOR_RESIZE, deliver.error);
-  const cropResizer = useResizer(CROP_SOURCE_RESIZE, deliver.error);
   const loop = useMemo(
     () =>
       createSynchronizable<LoopState>({
         paused: false,
+        closed: false,
+        busy: false,
+        proven: false,
         shown: false,
         lastDetectAt: 0,
         lastEmbedAt: 0,
@@ -147,6 +207,9 @@ export function useLivePipeline(
       }),
     [],
   );
+  const resizers = useResizers(loop, deliver.unsupported);
+  const detectorResizer = resizers?.detector ?? null;
+  const cropResizer = resizers?.crop ?? null;
 
   const { detector, embedder } = models;
   const onFrame = useMemo(() => {
@@ -163,11 +226,25 @@ export function useLivePipeline(
 
     return (frame: Frame) => {
       "worklet";
+      let claimed = false;
       try {
         if (!detectorResizer || !cropResizer) return;
         const state = loop.getDirty();
         const now = Date.now();
-        if (state.paused || now - state.lastDetectAt < detectEveryMs) return;
+        if (
+          state.closed ||
+          state.paused ||
+          now - state.lastDetectAt < detectEveryMs
+        )
+          return;
+        // Claimed under the loop's lock: once the pipeline is closed no frame starts,
+        // and cleanup waits for a claimed one before freeing the resizers.
+        loop.setBlocking((previous) => {
+          if (previous.closed) return previous;
+          claimed = true;
+          return { ...previous, busy: true };
+        });
+        if (!claimed) return;
 
         const resized = detectorResizer.resize(frame);
         let best: ScoredBox | null;
@@ -220,6 +297,7 @@ export function useLivePipeline(
 
         loop.setBlocking((previous) => ({
           ...previous,
+          proven: true,
           shown: box !== null,
           lastDetectAt: now,
           lastEmbedAt: view ? now : previous.lastEmbedAt,
@@ -234,19 +312,24 @@ export function useLivePipeline(
         if (view) scheduleOnRN(deliver.view, view);
       } catch (error) {
         // Stop instead of reporting the same failure on every frame.
+        const { proven, closed } = loop.getDirty();
         loop.setBlocking((previous) => ({ ...previous, paused: true }));
-        scheduleOnRN(
-          deliver.error,
-          error instanceof Error ? error.message : String(error),
-        );
+        // A failure while shutting down is not the phone's or the cashier's problem.
+        if (!closed)
+          scheduleOnRN(
+            proven ? deliver.error : deliver.unsupported,
+            error instanceof Error ? error.message : String(error),
+          );
       } finally {
+        if (claimed)
+          loop.setBlocking((previous) => ({ ...previous, busy: false }));
         frame.dispose();
       }
     };
   }, [detector, embedder, detectorResizer, cropResizer, loop, deliver]);
 
   const frameOutput = useFrameOutput({
-    pixelFormat: PIXEL_FORMAT,
+    pixelFormat,
     // The models see at most 448 px; full-resolution buffers only cost bandwidth.
     enablePreviewSizedOutputBuffers: true,
     dropFramesWhileBusy: true,

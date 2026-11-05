@@ -1,11 +1,12 @@
 import { router } from "expo-router";
-import { useReducer, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 
 import { errorMessage } from "@/components/shop-ui";
 import { useShop } from "@/db/ShopProvider";
 import { MatchVoter } from "@/ml/voter";
 import { feedback } from "@/features/feedback";
 import { resolveRecognition } from "@/features/recognition/resolve";
+import { warmUpBeep } from "@/features/scan-beep";
 import { MANIFEST } from "@/features/vision/config";
 import { saveCorrection } from "@/features/vision/enrolment";
 import {
@@ -30,11 +31,16 @@ export function useIdentify() {
   const [voter] = useState(() => new MatchVoter(MANIFEST.matching));
   const index = vision.vectorIndex(store);
 
+  useEffect(warmUpBeep, []);
+
   function onView(view: EmbeddedView, { single }: { single: boolean }) {
     const ranking = index.topK(view.vector, MANIFEST.matching.top_k);
     // A single captured photo is shown directly; live views must win repeatedly.
     const locked = single ? ranking.length > 0 : voter.push(ranking) !== null;
-    if (locked) feedback.success();
+    if (locked) {
+      feedback.beep();
+      feedback.success();
+    }
     dispatch({ type: "matched", view, ranking, locked, at: Date.now() });
   }
 

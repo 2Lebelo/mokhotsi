@@ -10,7 +10,7 @@ import { inputShape } from "@/ml/manifest";
 import { pixelSource, sampleToTensor } from "@/ml/tensors";
 import { l2Normalize } from "@/ml/vector";
 import { decodeBestBox, holdBox } from "@/ml/yolo";
-import { MANIFEST, PIPELINE } from "@/features/vision/config";
+import { DEBUG_VISION, MANIFEST, PIPELINE } from "@/features/vision/config";
 import type { EmbeddedView } from "@/features/vision/types";
 import type { VisionModels } from "@/features/vision/vision-service";
 
@@ -25,6 +25,24 @@ type Prepared = {
   box: ScoredBox | null;
 };
 
+/**
+ * Frees native images now. Nitro images are released when Hermes collects their JS wrapper,
+ * but the garbage collector does not see their (multi-megabyte) native bitmaps, so a few
+ * uncollected captures are enough to kill the app on a 2 GB phone. Ignores repeats and
+ * images already freed.
+ */
+export function disposeImages(
+  ...images: readonly ({ dispose(): void } | null | undefined)[]
+): void {
+  for (const image of new Set(images)) {
+    try {
+      image?.dispose();
+    } catch {
+      /* Already disposed. */
+    }
+  }
+}
+
 /** Centre square -> crop source pixels, plus the detected item when `detect` is set. */
 async function prepare(
   models: VisionModels,
@@ -32,14 +50,23 @@ async function prepare(
   detect: boolean,
 ): Promise<Prepared> {
   const square = centerSquare(image.width, image.height);
-  const source = await (
-    await image.cropAsync(
-      square.x,
-      square.y,
-      square.x + square.size,
-      square.y + square.size,
-    )
-  ).resizeAsync(PIPELINE.cropSourceSize, PIPELINE.cropSourceSize);
+  const cropped = await image.cropAsync(
+    square.x,
+    square.y,
+    square.x + square.size,
+    square.y + square.size,
+  );
+  let source: Image;
+  try {
+    source = await cropped.resizeAsync(
+      PIPELINE.cropSourceSize,
+      PIPELINE.cropSourceSize,
+    );
+  } finally {
+    // The full-size square is the big one; the caller still owns `image`.
+    if (!cropped.equals(image)) disposeImages(cropped);
+  }
+  // `source` (448 px) is left to the garbage collector: `pixels` reads its buffer below.
   const raw = await source.toRawPixelDataAsync();
   const pixels = pixelSource(
     raw.buffer,
@@ -63,9 +90,10 @@ async function prepare(
   const best = decodeBestBox(new Float32Array(output), spec.output[0], 0);
   // A single photo has no box on screen yet, so it must reach the show threshold.
   const box = holdBox(best, false, spec.show_threshold, spec.keep_threshold);
-  console.log(
-    `[vision] still detection score ${best?.score.toFixed(3) ?? "none"} · box ${box ? "used" : "rejected"}`,
-  );
+  if (DEBUG_VISION)
+    console.log(
+      `[vision] still detection score ${best?.score.toFixed(3) ?? "none"} · box ${box ? "used" : "rejected"}`,
+    );
   return { pixels, box };
 }
 

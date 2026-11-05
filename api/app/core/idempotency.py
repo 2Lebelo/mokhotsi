@@ -9,6 +9,8 @@ Routers opt in with `APIRouter(route_class=IdempotentRoute)`. For every POST on 
 - Same key while the first request is still running: 409 `idempotency_in_progress`.
 Failed requests (non-2xx or exceptions) release the key so the client can retry.
 Keys are scoped per caller (token subject, or client IP when anonymous) and per method + path.
+Routes whose response carries a secret (a temporary PIN) opt out with IDEMPOTENCY_UNSUPPORTED:
+replaying it would mean storing the secret.
 """
 
 import hashlib
@@ -21,7 +23,7 @@ from fastapi.routing import APIRoute
 
 from app.core.config import Settings
 from app.core.errors import AppError, Conflict, Unprocessable
-from app.core.request_meta import client_ip, peek_claims
+from app.core.request_meta import client_ip, peek_subject
 from app.repositories import idempotency_keys
 
 HEADER = "Idempotency-Key"
@@ -56,12 +58,17 @@ IDEMPOTENCY_OPTIONAL: dict[str, Any] = {
 }
 
 
+# The response holds a secret that must not be stored for replay; the header is ignored.
+IDEMPOTENCY_UNSUPPORTED: dict[str, Any] = {_EXTENSION: "unsupported"}
+
+
 class IdempotentRoute(APIRoute):
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         handler = super().get_route_handler()
-        if "POST" not in self.methods:
+        mode = (self.openapi_extra or {}).get(_EXTENSION)
+        if "POST" not in self.methods or mode == "unsupported":
             return handler
-        required = (self.openapi_extra or {}).get(_EXTENSION) == "required"
+        required = mode == "required"
 
         async def route_handler(request: Request) -> Response:
             key = request.headers.get(HEADER)
@@ -77,8 +84,7 @@ class IdempotentRoute(APIRoute):
 
             settings: Settings = request.app.state.settings
             db = request.app.state.db
-            claims = peek_claims(request, settings)
-            caller = f"user:{claims.sub}" if claims else f"ip:{client_ip(request, settings)}"
+            caller = peek_subject(request, settings) or f"ip:{client_ip(request)}"
             scope = f"{caller}:{request.method}:{request.url.path}"
             request_hash = hashlib.sha256(await request.body()).hexdigest()
             ttl = timedelta(hours=settings.idempotency_ttl_hours)

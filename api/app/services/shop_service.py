@@ -1,16 +1,28 @@
-"""Shops: admins see and manage all of them; keepers create and manage their own."""
+"""Shops: approved owners create and rename their own; the system admin suspends and reactivates.
+
+A new shop gets its own PIN key. The owner confirms their PIN when creating it, which proves it
+is them on this phone and lets the server compute their PIN tag in the new shop.
+"""
 
 import re
+from datetime import timedelta
 from uuid import UUID
 
+from fastapi import Request
+
 from app.core import audit
+from app.core.clock import utcnow
+from app.core.config import Settings
 from app.core.db import Database, Document, Session, in_transaction
 from app.core.deps import Caller
-from app.core.errors import Forbidden, NotFound, Unprocessable
+from app.core.errors import Conflict, Forbidden, Locked, NotFound, Unauthorized
 from app.core.pagination import PageParams, build_page_query
-from app.core.permissions import MemberRole, Perm, Role, shop_permissions
-from app.repositories import memberships, shops, users
+from app.core.permissions import MemberRole, Perm, shop_permissions
+from app.core.ratelimit import limit_attempts
+from app.core.security import new_pin_key, pin_tag, verify_pin
+from app.repositories import memberships, shop_secrets, shops, users
 from app.schemas.shops import ShopCreate, ShopOut, ShopUpdate
+from app.services import device_service
 from app.services.user_service import add_member
 
 SHOP_SORTS = {"created_at": "created_at", "name": "name"}
@@ -34,25 +46,38 @@ def to_out(doc: Document, membership: Document | None = None) -> ShopOut:
     return out
 
 
-async def create_shop(db: Database, caller: Caller, body: ShopCreate) -> Document:
-    if caller.has(Perm.SHOPS_WRITE_ALL):
-        if body.owner_id is None:
-            raise Unprocessable("owner_id is required", code="owner_required")
-        owner = await users.get(db, body.owner_id)
-        if owner is None or owner["role"] != Role.SHOP_KEEPER.value or owner["status"] != "active":
-            raise Unprocessable("owner_id must be an active shop_keeper", code="invalid_owner")
-        owner_id = body.owner_id
-    elif caller.has(Perm.SHOPS_CREATE_OWN):
-        if body.owner_id not in (None, caller.user_id):
-            raise Forbidden("You can only create shops you own", code="permission_denied")
-        owner_id = caller.user_id
-    else:
+async def create_shop(
+    request: Request, db: Database, settings: Settings, caller: Caller, body: ShopCreate
+) -> Document:
+    if not caller.has(Perm.SHOPS_CREATE_OWN):
         raise Forbidden("You do not have permission to do this", code="permission_denied")
+    user = await users.get(db, caller.user_id)
+    if user is None:
+        raise NotFound("User not found")
+    if user["locked_until"] is not None and user["locked_until"] > utcnow():
+        raise Locked("Too many wrong PINs. Try again later.")
+    await limit_attempts(request, "pin", str(caller.user_id), settings.rate_limit_login_per_minute)
+    if not await verify_pin(body.pin, user["pin_hash"]):
+        await users.record_pin_failure(
+            db,
+            user["_id"],
+            settings.pin_max_failures,
+            timedelta(seconds=settings.pin_lockout_seconds),
+            timedelta(hours=settings.pin_lockout_max_hours),
+        )
+        raise Unauthorized("Wrong PIN", code="invalid_credentials")
+    if await shops.count_owned(db, caller.user_id) >= settings.max_shops_per_owner:
+        raise Conflict(
+            f"An owner can have at most {settings.max_shops_per_owner} shops",
+            code="shop_limit_reached",
+        )
 
-    doc = shops.new_shop_doc(name=body.name, owner_id=owner_id, created_by=caller.user_id)
+    doc = shops.new_shop_doc(name=body.name, owner_id=caller.user_id, created_by=caller.user_id)
+    key = new_pin_key()
 
     async def write(s: Session) -> None:
         await shops.insert(db, doc, s)
+        await shop_secrets.insert(db, doc["_id"], key, s)
         await audit.record(
             db,
             caller.actor,
@@ -63,7 +88,17 @@ async def create_shop(db: Database, caller: Caller, body: ShopCreate) -> Documen
             changes=audit.snapshot(doc, AUDITED_FIELDS),
             session=s,
         )
-        await add_member(db, caller.actor, owner_id, doc["_id"], MemberRole.KEEPER, s)
+        await add_member(
+            db,
+            caller.actor,
+            caller.user_id,
+            doc["_id"],
+            MemberRole.OWNER,
+            pin_tag(key, body.pin),
+            s,
+        )
+        if caller.device_id is not None:
+            await device_service.link_to_shop(db, caller.actor, caller.device_id, doc["_id"], s)
 
     await in_transaction(db, write)
     return doc
@@ -113,14 +148,16 @@ async def update_shop(
     db: Database, caller: Caller, shop_id: UUID, body: ShopUpdate, expected_version: int | None
 ) -> ShopOut:
     shop, membership = await _resolve(db, caller, shop_id)
-    allowed = caller.has(Perm.SHOPS_WRITE_ALL) or (
-        membership is not None
-        and Perm.SHOP_MANAGE
-        in shop_permissions(MemberRole(membership["role"]), membership["permissions"])
-    )
-    if not allowed:
-        raise Forbidden("You do not have permission to do this", code="permission_denied")
     changes = {k: v for k, v in body.model_dump(exclude_unset=True).items() if shop.get(k) != v}
+    manages = membership is not None and Perm.SHOP_MANAGE in shop_permissions(
+        MemberRole(membership["role"]), membership["permissions"]
+    )
+    if "status" in changes and not caller.has(Perm.SHOPS_WRITE_ALL):
+        raise Forbidden("Only a system admin can suspend a shop", code="permission_denied")
+    if "name" in changes and not (manages or caller.has(Perm.SHOPS_WRITE_ALL)):
+        raise Forbidden("You do not have permission to do this", code="permission_denied")
+    if "name" in changes and shop["status"] == "suspended" and not caller.has(Perm.SHOPS_WRITE_ALL):
+        raise Forbidden("This shop is suspended", code="shop_suspended")
     if not changes:
         return to_out(shop, membership)
 
@@ -128,10 +165,14 @@ async def update_shop(
         updated = await shops.update(
             db, shop_id, changes, expected_version=expected_version, session=s
         )
+        await shops.bump_roster(db, [shop_id], s)  # Phones show the shop's name and status.
+        action = {"suspended": "shop.suspended", "active": "shop.reactivated"}.get(
+            changes.get("status", ""), "shop.updated"
+        )
         await audit.record(
             db,
             caller.actor,
-            "shop.updated",
+            action,
             entity="shop",
             entity_id=shop_id,
             shop_id=shop_id,

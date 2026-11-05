@@ -18,7 +18,8 @@ from pymongo.errors import PyMongoError
 
 os.environ.setdefault("JWT_SECRET", "test-only-secret-not-used-in-production-000000")
 
-from app.core.config import Settings  # imported after JWT_SECRET is set
+from app.cli import AdminSeed  # imported after JWT_SECRET is set
+from app.core.config import Settings
 from app.main import create_app
 
 TEST_DB = os.environ.get("MONGO_DB_TEST", "mokhotsi_test")
@@ -51,6 +52,13 @@ def _mongo_reachable(uri: str) -> bool:
 @pytest.fixture(scope="session")
 def mongo_available(settings: Settings) -> bool:
     return _mongo_reachable(settings.mongo_uri)
+
+
+@pytest.fixture(autouse=True)
+def _no_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Settings found without `_env_file=None` (get_settings, the CLI) skip api/.env too."""
+    for model in (Settings, AdminSeed):
+        monkeypatch.setitem(model.model_config, "env_file", None)
 
 
 @pytest.fixture(autouse=True)

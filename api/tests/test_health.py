@@ -19,8 +19,9 @@ def test_lifespan_created_indexes(client: TestClient, mongo) -> None:
         existing = set(mongo[collection].index_information())
         for index in indexes:
             assert index.document["name"] in existing, (collection, index.document["name"])
-    ttl = mongo["applied_ops"].index_information()["applied_at_ttl"]
-    assert ttl["expireAfterSeconds"] == 30 * 24 * 60 * 60
+    ttl = mongo["applied_ops"].index_information()["applied_at_ttl_180d"]
+    assert ttl["expireAfterSeconds"] == 180 * 24 * 60 * 60
+    assert "shop_seq" not in mongo["products"].index_information()  # Sync v1, dropped.
     assert mongo["sessions"].index_information()["expires_at_ttl"]["expireAfterSeconds"] == 0
 
 
@@ -33,7 +34,7 @@ def test_legacy_shop_phone_index_is_dropped(make_client, mongo, settings: Settin
 
 @pytest.mark.requires_mongo
 def test_validation_errors_use_the_error_shape(client: TestClient) -> None:
-    response = client.post("/api/v1/tokens", json={"grant_type": "password", "email": "x"})
+    response = client.post("/api/v1/tokens", json={"grant_type": "pin", "phone": "x"})
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
 
@@ -42,31 +43,50 @@ def test_openapi_documents_every_endpoint(settings: Settings) -> None:
     paths = create_app(settings).openapi()["paths"]
     assert set(paths) == {
         "/health",
+        "/api/v1/registrations",
         "/api/v1/tokens",
         "/api/v1/sessions",
         "/api/v1/sessions/current",
         "/api/v1/sessions/{session_id}",
         "/api/v1/users",
         "/api/v1/users/me",
-        "/api/v1/users/me/password",
+        "/api/v1/users/me/pin",
         "/api/v1/users/{user_id}",
-        "/api/v1/users/{user_id}/password-resets",
+        "/api/v1/users/{user_id}/reviews",
+        "/api/v1/users/{user_id}/pin-resets",
         "/api/v1/roles",
         "/api/v1/permissions",
         "/api/v1/shops",
         "/api/v1/shops/{shop_id}",
         "/api/v1/shops/{shop_id}/members",
         "/api/v1/shops/{shop_id}/members/{user_id}",
-        "/api/v1/shops/{shop_id}/members/{user_id}/password-resets",
+        "/api/v1/shops/{shop_id}/members/{user_id}/pin",
+        "/api/v1/devices",
+        "/api/v1/devices/me/roster",
+        "/api/v1/devices/{device_id}",
+        "/api/v1/shops/{shop_id}/devices",
+        "/api/v1/shops/{shop_id}/devices/{device_id}",
+        "/api/v1/shops/{shop_id}/data-claim",
         "/api/v1/audit-logs",
         "/api/v1/shops/{shop_id}/audit-logs",
         "/api/v1/shops/{shop_id}/sync/push",
         "/api/v1/shops/{shop_id}/sync/pull",
+        "/api/v1/shops/{shop_id}/sync/snapshot",
+        "/api/v1/shops/{shop_id}/sync/photos/uploads",
+        "/api/v1/shops/{shop_id}/sync/photos/confirm",
+        "/api/v1/shops/{shop_id}/sync/photos/urls",
+        "/api/v1/shops/{shop_id}/sync/issues",
+        "/api/v1/sync-issues",
+        "/api/v1/sync-issues/count",
+        "/api/v1/sync-issues/{issue_id}/resolve",
     }
-    create_user = paths["/api/v1/users"]["post"]
-    assert create_user["x-idempotency-key"] == "optional"
-    assert any(p["name"] == "Idempotency-Key" for p in create_user["parameters"])
-    assert "409" in create_user["responses"]
+    create_shop = paths["/api/v1/shops"]["post"]
+    assert create_shop["x-idempotency-key"] == "optional"
+    assert any(p["name"] == "Idempotency-Key" for p in create_shop["parameters"])
+    assert "409" in create_shop["responses"]
+    # Responses holding a secret are never stored for replay.
+    for path in ("/api/v1/users", "/api/v1/users/{user_id}/pin-resets"):
+        assert paths[path]["post"]["x-idempotency-key"] == "unsupported"
 
 
 def test_cors_is_off_by_default(settings: Settings) -> None:

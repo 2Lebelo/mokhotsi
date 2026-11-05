@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mokhotsi:contracts:sync:v2",
+  "title": "Mokhotsi sync contract, version 2",
+  "description": "Wire format between a shop's devices and the API (ADR 0005, amendment 2). Mirrored by api/app/schemas/sync.py and mobile/src/contracts/sync.ts; the API and mobile tests check both against this file. Endpoints: POST /api/v1/shops/{shop_id}/sync/push, GET /api/v1/shops/{shop_id}/sync/pull?cursor=&limit=, GET /api/v1/shops/{shop_id}/sync/snapshot?entity=&after=&limit=&model_version=; photos (described in openapi.json): POST .../sync/photos/uploads, .../photos/confirm, .../photos/urls. Sync is authenticated by the device token; the shop comes from the path and the device's registration, never from a payload. Ordering is by the server-assigned per-shop `seq`, never a device clock. Money is integer cents. Ids are client-generated UUIDs. Stock is never sent as a figure by a device: devices send movements, sales and reversals, and receive `stock_levels`. Images travel as content hashes; their bytes go to Cloudinary.",
+  "$defs": {
+    "Uuid": { "type": "string", "format": "uuid" },
+    "Sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Lower-case hex SHA-256 of an image file's bytes." },
+    "Actor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "A user id, or \"local\" for changes made before the shop was registered (accepted only from the phone that registered the shop's data, and attributed to the owner)."
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC from the device clock. Informational only; never used for ordering."
+    },
+    "Cents": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "Quantity": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "Seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Server-assigned, strictly increasing per shop."
+    },
+    "Entity": {
+      "type": "string",
+      "enum": ["products", "sales", "reversals", "stock_movements", "embeddings"],
+      "description": "Entities a device pushes. products: last write to reach the server wins. The rest are insert-only facts; an embedding can also be deleted (it then stays deleted)."
+    },
+    "ProductVariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "size_milli", "unit", "price_cents", "cost_cents", "barcode", "position", "archived_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "size_milli": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "unit": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "price_cents": { "$ref": "#/$defs/Cents" },
+        "cost_cents": { "type": ["integer", "null"], "minimum": 0 },
+        "barcode": { "type": ["string", "null"], "maxLength": 64 },
+        "position": { "type": "integer", "minimum": 0 },
+        "archived_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "ProductPhoto": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot", "sha256"],
+      "properties": {
+        "slot": { "type": "integer", "enum": [0, 1], "description": "0: the main photo, 1: another angle." },
+        "sha256": { "$ref": "#/$defs/Sha256" }
+      }
+    },
+    "Product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "category", "photos", "updated_by", "created_at", "updated_at", "variants"],
+      "description": "A product with every size it has ever had (archived ones included, since receipts refer to them). Only someone allowed to edit the catalogue may change it; otherwise the op is rejected (permission_denied).",
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "photos": { "type": "array", "maxItems": 2, "items": { "$ref": "#/$defs/ProductPhoto" } },
+        "updated_by": { "$ref": "#/$defs/Actor" },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "updated_at": { "$ref": "#/$defs/Timestamp" },
+        "variants": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/$defs/ProductVariant" } }
+      }
+    },
+    "SaleItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "product_id", "variant_id", "product_name", "variant_label", "category", "barcode", "quantity", "unit_price_cents", "line_total_cents", "unit_cost_cents"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "product_id": { "$ref": "#/$defs/Uuid" },
+        "variant_id": { "$ref": "#/$defs/Uuid" },
+        "product_name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "variant_label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "barcode": { "type": ["string", "null"], "maxLength": 64 },
+        "quantity": { "$ref": "#/$defs/Quantity" },
+        "unit_price_cents": { "$ref": "#/$defs/Cents" },
+        "line_total_cents": { "$ref": "#/$defs/Cents" },
+        "unit_cost_cents": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "Sale": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "total_cents", "tendered_cents", "change_cents", "actor_user_id", "device_id", "imported", "created_at", "items"],
+      "description": "A cash sale as the till recorded it. The server stores what was charged and takes the units off stock, unless `imported` (a sale made before registration, already counted in the opening stock). A sale by someone removed from the shop, or no longer allowed to sell, is kept and flagged.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "total_cents": { "$ref": "#/$defs/Cents" },
+        "tendered_cents": { "type": ["integer", "null"], "minimum": 0 },
+        "change_cents": { "type": ["integer", "null"], "minimum": 0 },
+        "actor_user_id": { "$ref": "#/$defs/Actor" },
+        "device_id": { "$ref": "#/$defs/Actor" },
+        "imported": { "type": "boolean" },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "items": { "type": "array", "minItems": 1, "maxItems": 500, "items": { "$ref": "#/$defs/SaleItem" } }
+      }
+    },
+    "ReversalItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sale_item_id", "quantity", "restocked", "refund_cents"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "sale_item_id": { "$ref": "#/$defs/Uuid" },
+        "quantity": { "$ref": "#/$defs/Quantity" },
+        "restocked": { "type": "boolean" },
+        "refund_cents": { "$ref": "#/$defs/Cents" }
+      }
+    },
+    "Reversal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sale_id", "reason", "refund_cents", "actor_user_id", "device_id", "imported", "created_at", "items"],
+      "description": "A refund of some or all of a sale. Restocked lines put units back on stock (unless `imported`). The same-day rule is enforced on the device; the server records the reversal as made.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "sale_id": { "$ref": "#/$defs/Uuid" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "refund_cents": { "$ref": "#/$defs/Cents" },
+        "actor_user_id": { "$ref": "#/$defs/Actor" },
+        "device_id": { "$ref": "#/$defs/Actor" },
+        "imported": { "type": "boolean" },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "items": { "type": "array", "minItems": 1, "maxItems": 500, "items": { "$ref": "#/$defs/ReversalItem" } }
+      }
+    },
+    "StockMovement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "variant_id", "delta", "kind", "actor_user_id", "device_id", "created_at"],
+      "description": "A change to a size's stock that is not a sale or reversal. A count is sent as the difference from what the device showed, never as the counted figure.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "variant_id": { "$ref": "#/$defs/Uuid" },
+        "delta": { "type": "integer", "not": { "const": 0 }, "minimum": -9007199254740991, "maximum": 9007199254740991 },
+        "kind": { "type": "string", "enum": ["opening", "restock", "adjustment"] },
+        "actor_user_id": { "$ref": "#/$defs/Actor" },
+        "device_id": { "$ref": "#/$defs/Actor" },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "StockLevel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variant_id", "stock"],
+      "description": "Pull only. The server's stock for a size: the sum of every accepted movement. May be negative.",
+      "properties": {
+        "variant_id": { "$ref": "#/$defs/Uuid" },
+        "stock": { "type": "integer" }
+      }
+    },
+    "Embedding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "product_id", "model_version", "source", "image_sha256", "dim", "vector_f16", "created_at"],
+      "description": "A stored view of a product for visual matching. A device uses only views of its own model_version and re-derives the others from `image_sha256` (a product photo or a correction crop).",
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "product_id": { "$ref": "#/$defs/Uuid" },
+        "model_version": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "source": { "type": "string", "enum": ["photo", "teach", "correction"] },
+        "image_sha256": { "oneOf": [{ "$ref": "#/$defs/Sha256" }, { "type": "null" }] },
+        "dim": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "vector_f16": { "type": "string", "minLength": 4, "maxLength": 11000, "description": "Base64 of `dim` little-endian IEEE-754 binary16 values of the L2-normalised vector." },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "EmbeddingDelete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "description": "Payload of an embedding `delete` op. A deleted view never comes back, even if re-sent.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" }
+      }
+    },
+    "EmbeddingTombstone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "product_id", "deleted"],
+      "description": "Pull only: delete this view.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Uuid" },
+        "product_id": { "$ref": "#/$defs/Uuid" },
+        "deleted": { "const": true }
+      }
+    },
+    "Op": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op_id", "entity", "entity_id", "op", "payload"],
+      "properties": {
+        "op_id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "Idempotency key, remembered for 180 days. A re-sent op is acknowledged without being applied again."
+        },
+        "entity": { "$ref": "#/$defs/Entity" },
+        "entity_id": { "$ref": "#/$defs/Uuid" },
+        "op": { "type": "string", "enum": ["upsert", "delete"], "description": "delete: embeddings only." },
+        "payload": {
+          "oneOf": [
+            { "$ref": "#/$defs/Product" },
+            { "$ref": "#/$defs/Sale" },
+            { "$ref": "#/$defs/Reversal" },
+            { "$ref": "#/$defs/StockMovement" },
+            { "$ref": "#/$defs/Embedding" },
+            { "$ref": "#/$defs/EmbeddingDelete" }
+          ],
+          "description": "The record for `entity`: products → Product, sales → Sale, reversals → Reversal, stock_movements → StockMovement, embeddings → Embedding (EmbeddingDelete for a delete)."
+        }
+      }
+    },
+    "PushRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_id", "schema_version", "ops"],
+      "properties": {
+        "device_id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "Must equal the device of the token (403 device_mismatch)."
+        },
+        "schema_version": { "type": "integer", "const": 2, "description": "Anything else: 426 client_update_required." },
+        "ops": { "type": "array", "minItems": 1, "maxItems": 200, "items": { "$ref": "#/$defs/Op" } }
+      }
+    },
+    "Rejection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op_id", "code", "message"],
+      "description": "An op the server will never accept as sent. Codes: invalid_op, invalid_payload, total_mismatch, id_conflict, op_conflict, permission_denied, unknown_actor, unknown_sale, unknown_variant, unknown_product. It is parked on the device for the owner; it never blocks the rest of the queue.",
+      "properties": {
+        "op_id": { "$ref": "#/$defs/Uuid" },
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    },
+    "PushResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["acked", "rejected", "flagged", "seq"],
+      "properties": {
+        "acked": { "type": "array", "items": { "$ref": "#/$defs/Uuid" } },
+        "rejected": { "type": "array", "items": { "$ref": "#/$defs/Rejection" } },
+        "flagged": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Uuid" },
+          "description": "Acked ops recorded for the owner to review, e.g. a sale by a cashier removed while the till was offline."
+        },
+        "seq": { "type": "string", "pattern": "^[0-9]+$", "description": "The shop's latest seq after this push." }
+      }
+    },
+    "Change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "entity", "record"],
+      "properties": {
+        "seq": { "$ref": "#/$defs/Seq" },
+        "entity": { "type": "string", "enum": ["products", "sales", "reversals", "stock_levels", "embeddings"] },
+        "record": {
+          "oneOf": [
+            { "$ref": "#/$defs/Product" },
+            { "$ref": "#/$defs/Sale" },
+            { "$ref": "#/$defs/Reversal" },
+            { "$ref": "#/$defs/StockLevel" },
+            { "$ref": "#/$defs/Embedding" },
+            { "$ref": "#/$defs/EmbeddingTombstone" }
+          ],
+          "description": "The current state of the record, not the op that changed it."
+        }
+      }
+    },
+    "PullResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["changes", "next_cursor", "has_more"],
+      "description": "Changes after the cursor in seq order, at most `limit` (≤500) and about 1 MB, one entry per record. A device applies a page and its cursor in one transaction, skips records it still has pending ops for (except stock_levels), and never queues ops for what it pulled. 410 cursor_expired: re-run the snapshot.",
+      "properties": {
+        "changes": { "type": "array", "items": { "$ref": "#/$defs/Change" } },
+        "next_cursor": { "type": "string", "pattern": "^[0-9]+$" },
+        "has_more": { "type": "boolean" }
+      }
+    },
+    "SnapshotResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity", "records", "after", "has_more", "snapshot_seq"],
+      "description": "One page of the shop's current state for a new device: every product, stock level and embedding (of the requested model_version), and sales and reversals from the last 90 days. Continue with pull from the first page's `snapshot_seq`.",
+      "properties": {
+        "entity": { "type": "string", "enum": ["products", "stock_levels", "sales", "reversals", "embeddings"] },
+        "records": { "type": "array" },
+        "after": { "type": ["string", "null"], "description": "Pass back as ?after= for the next page." },
+        "has_more": { "type": "boolean" },
+        "snapshot_seq": { "type": "string", "pattern": "^[0-9]+$" }
+      }
+    }
+  }
+}

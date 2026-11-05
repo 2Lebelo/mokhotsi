@@ -1,38 +1,43 @@
+"""Products with every size they ever had (sync v2). The last write to reach the server wins."""
+
 from uuid import UUID
 
-from pymongo import ASCENDING, IndexModel
+from pymongo import ASCENDING, IndexModel, ReplaceOne
 
 from app.core.db import Database, Document, Session
-from app.repositories import _sync_common
 
 COLLECTION = "products"
 INDEXES = [
-    IndexModel([("shop_id", ASCENDING), ("seq", ASCENDING)], name="shop_seq", unique=True),
-    IndexModel([("shop_id", ASCENDING), ("barcode", ASCENDING)], name="shop_barcode"),
+    IndexModel([("shop_id", ASCENDING), ("_id", ASCENDING)], name="shop_id_id"),
+    # Sales, movements and stock levels refer to sizes, not products.
+    IndexModel([("shop_id", ASCENDING), ("variants.id", ASCENDING)], name="shop_variant"),
 ]
 
 
-async def upsert(
-    db: Database, shop_id: UUID, doc: Document, seq: int, session: Session | None = None
-) -> None:
-    """Replace the whole product: the last write to reach the server wins."""
-    await db[COLLECTION].replace_one(
-        {"_id": doc["_id"], "shop_id": shop_id},
-        {**doc, "shop_id": shop_id, "seq": seq},
-        upsert=True,
+async def replace_many(db: Database, docs: list[Document], session: Session | None = None) -> None:
+    """Replace whole products (each doc carries its `shop_id`)."""
+    if docs:
+        await db[COLLECTION].bulk_write(
+            [ReplaceOne({"_id": d["_id"], "shop_id": d["shop_id"]}, d, upsert=True) for d in docs],
+            session=session,
+        )
+
+
+async def variant_products(
+    db: Database, shop_id: UUID, variant_ids: list[UUID], session: Session | None = None
+) -> dict[UUID, UUID]:
+    """{variant_id: product_id} for the sizes this shop has."""
+    if not variant_ids:
+        return {}
+    wanted = set(variant_ids)
+    cursor = db[COLLECTION].find(
+        {"shop_id": shop_id, "variants.id": {"$in": variant_ids}},
+        projection={"variants.id": 1},
         session=session,
     )
-
-
-async def get(
-    db: Database, shop_id: UUID, product_id: UUID, session: Session | None = None
-) -> Document | None:
-    return await db[COLLECTION].find_one({"_id": product_id, "shop_id": shop_id}, session=session)
-
-
-async def owners(db: Database, ids: list[UUID], session: Session | None = None) -> dict[UUID, UUID]:
-    return await _sync_common.owners(db, COLLECTION, ids, session)
-
-
-async def changes_since(db: Database, shop_id: UUID, after_seq: int, limit: int) -> list[Document]:
-    return await _sync_common.changes_since(db, COLLECTION, shop_id, after_seq, limit)
+    found: dict[UUID, UUID] = {}
+    async for doc in cursor:
+        for variant in doc["variants"]:
+            if variant["id"] in wanted:
+                found[variant["id"]] = doc["_id"]
+    return found

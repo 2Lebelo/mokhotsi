@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useState } from "react";
+import { loadImage } from "react-native-nitro-image";
 import {
   ActivityIndicator,
   Platform,
@@ -12,14 +13,17 @@ import {
 } from "react-native";
 
 import { Sheet } from "@/components/sheet";
+import { Button, font, ui, usePalette } from "@/components/shop-ui";
 import {
-  Button,
-  errorMessage,
-  font,
-  ui,
-  usePalette,
-} from "@/components/shop-ui";
+  hasRoomForPhoto,
+  PHOTO_MESSAGES,
+  photoProblem,
+  squarePhoto,
+} from "@/features/photos";
+import { PhotoCapture } from "@/features/products/components/photo-capture";
 import type { PhotoSlot } from "@/features/products/product-form";
+import { toFilePath } from "@/features/vision/crops";
+import { disposeImages } from "@/features/vision/still-pipeline";
 
 const SLOTS: { slot: PhotoSlot; label: string }[] = [
   { slot: "photo", label: "Front" },
@@ -43,39 +47,53 @@ export function PhotoField({
 }) {
   const c = usePalette();
   const [choosingFor, setChoosingFor] = useState<PhotoSlot | null>(null);
+  const [capturingFor, setCapturingFor] = useState<PhotoSlot | null>(null);
   const [picking, setPicking] = useState<PhotoSlot | null>(null);
   const locked = disabled || picking !== null;
 
-  async function pick(slot: PhotoSlot, camera: boolean) {
+  // Photos are taken in the app (PhotoCapture). The library still opens the system picker,
+  // which can only be reached by leaving the app.
+  /** Says so before the camera or library opens, not after the cashier has framed a shot. */
+  function roomForPhoto(): boolean {
+    if (hasRoomForPhoto()) return true;
+    onError(PHOTO_MESSAGES.storageFull);
+    return false;
+  }
+
+  async function pickFromLibrary(slot: PhotoSlot) {
     setChoosingFor(null);
+    if (!roomForPhoto()) return;
     setPicking(slot);
     try {
       // iOS cannot present the picker while the choice sheet is still closing.
       if (Platform.OS === "ios")
         await new Promise((resolve) => setTimeout(resolve, 350));
-      if (camera) {
-        const permission = await ImagePicker.requestCameraPermissionsAsync();
-        if (!permission.granted)
-          throw new Error(
-            "Allow camera access in your phone settings, or choose a photo from your library.",
-          );
-      }
-      const options: ImagePicker.ImagePickerOptions = {
+      const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
-        quality: 0.8,
+        quality: 1, // Re-encoded below, once.
         allowsEditing: true,
         aspect: [1, 1],
-      };
-      const result = camera
-        ? await ImagePicker.launchCameraAsync(options)
-        : await ImagePicker.launchImageLibraryAsync(options);
-      if (!result.canceled && result.assets[0])
-        onChange(slot, result.assets[0].uri);
+      });
+      const asset = result.canceled ? null : result.assets[0];
+      if (!asset) return;
+      const image = await loadImage({ filePath: toFilePath(asset.uri) });
+      try {
+        onChange(slot, await squarePhoto(image));
+      } finally {
+        disposeImages(image);
+      }
     } catch (cause) {
-      onError(errorMessage(cause));
+      onError(
+        photoProblem(cause, "That photo could not be opened. Please choose another."),
+      );
     } finally {
       setPicking(null);
     }
+  }
+
+  function takePhoto(slot: PhotoSlot) {
+    setChoosingFor(null);
+    if (roomForPhoto()) setCapturingFor(slot);
   }
 
   return (
@@ -152,15 +170,25 @@ export function PhotoField({
         <Button
           title="Take photo"
           icon="camera-outline"
-          onPress={() => choosingFor && void pick(choosingFor, true)}
+          onPress={() => choosingFor && takePhoto(choosingFor)}
         />
         <Button
           title="Choose from library"
           icon="images-outline"
           secondary
-          onPress={() => choosingFor && void pick(choosingFor, false)}
+          onPress={() => choosingFor && void pickFromLibrary(choosingFor)}
         />
       </Sheet>
+
+      <PhotoCapture
+        visible={capturingFor !== null}
+        title={capturingFor === "photo2" ? "Another angle" : "Product photo"}
+        onCapture={(uri) => {
+          if (capturingFor) onChange(capturingFor, uri);
+          setCapturingFor(null);
+        }}
+        onClose={() => setCapturingFor(null)}
+      />
     </View>
   );
 }
