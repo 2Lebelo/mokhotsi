@@ -1,4 +1,4 @@
-"""Reading the audit log (system-wide for admins, per shop for keepers)."""
+"""Reading the audit log (system-wide for admins, per shop for owners)."""
 
 from datetime import datetime
 from uuid import UUID

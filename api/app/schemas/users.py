@@ -1,25 +1,26 @@
-"""User models (admin user management and the caller's own profile)."""
+"""User models (admin user management and the caller's own account)."""
 
 from datetime import datetime
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from app.core.permissions import MemberRole, Perm, Role
-from app.schemas.common import Email, Name, Password, StrictModel
-
-UserStatus = Literal["active", "disabled"]
+from app.schemas.auth import NewPin, Phone, Pin, UserStatus
+from app.schemas.common import Name, StrictModel
 
 
 class UserOut(BaseModel):
     id: UUID
-    email: str
+    phone: str | None
     name: str
     role: Role
     status: UserStatus
-    must_change_password: bool
+    must_change_pin: bool
     last_login_at: datetime | None
+    reviewed_at: datetime | None = None
+    review_note: str | None = None
     created_at: datetime
     updated_at: datetime
     version: int
@@ -34,33 +35,30 @@ class MyMembership(BaseModel):
 
 
 class MeOut(UserOut):
-    permissions: list[Perm]
+    permissions: list[Perm]  # Empty until an owner is approved.
     memberships: list[MyMembership]
 
 
 class UserCreate(StrictModel):
-    email: Email
-    name: Name
-    role: Role
-    password: Password
-    shop_id: UUID | None = None
-    shop_name: Name | None = None
+    """An admin adds an owner or another admin directly (already approved).
 
-    @model_validator(mode="after")
-    def _shop_fields_match_role(self) -> Self:
-        if self.role is Role.SHOP_SITTER and self.shop_id is None:
-            raise ValueError("shop_id is required for a shop_sitter")
-        if self.role is not Role.SHOP_SITTER and self.shop_id is not None:
-            raise ValueError("shop_id is only allowed for a shop_sitter")
-        if self.role is not Role.SHOP_KEEPER and self.shop_name is not None:
-            raise ValueError("shop_name (an initial shop) is only allowed for a shop_keeper")
-        return self
+    The response carries a temporary PIN to pass on; it must be changed at first sign-in.
+    Cashiers are created by their shop's owner (POST /shops/{id}/members).
+    """
+
+    name: Name
+    phone: Phone
+    role: Literal[Role.OWNER, Role.SYSTEM_ADMIN]
+
+
+class UserCreated(BaseModel):
+    user: UserOut
+    temporary_pin: str = Field(description="Shown once. The user must change it at sign-in.")
 
 
 class UserUpdate(StrictModel):
     name: Name | None = None
-    role: Role | None = None
-    status: UserStatus | None = None
+    status: Literal["active", "disabled"] | None = None
 
     @model_validator(mode="after")
     def _not_empty(self) -> Self:
@@ -71,10 +69,20 @@ class UserUpdate(StrictModel):
         return self
 
 
-class PasswordChange(StrictModel):
-    current_password: str
-    new_password: Password
+ReviewNote = Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]
 
 
-class PasswordResetCreate(StrictModel):
-    new_password: Password
+class ReviewCreate(StrictModel):
+    """The admin's decision on a pending owner. A rejection should say why."""
+
+    decision: Literal["approve", "reject"]
+    note: ReviewNote | None = None
+
+
+class PinChange(StrictModel):
+    current_pin: Pin
+    new_pin: NewPin
+
+
+class PinResetOut(BaseModel):
+    temporary_pin: str = Field(description="Shown once. Pass it on; it must be changed at sign-in.")

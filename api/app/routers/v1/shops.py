@@ -1,9 +1,9 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 
-from app.core.deps import CallerDep, DbDep, IfMatchDep, etag
+from app.core.deps import CallerDep, DbDep, IfMatchDep, SettingsDep, etag
 from app.core.errors import error_responses
 from app.core.idempotency import IDEMPOTENCY_OPTIONAL, IdempotentRoute
 from app.core.pagination import Page, PageParams, make_page, page_params
@@ -35,14 +35,19 @@ async def list_shops(
     "",
     response_model=ShopOut,
     status_code=status.HTTP_201_CREATED,
-    responses=error_responses(401, 403, 422),
+    responses=error_responses(401, 403, 409, 422, 423, 429),
     openapi_extra=IDEMPOTENCY_OPTIONAL,
-    summary="Create a shop (keepers: owned by themselves; admins: set owner_id)",
+    summary="Open a shop (approved owners; confirms your PIN, registers this phone to it)",
 )
 async def create_shop(
-    db: DbDep, caller: CallerDep, body: ShopCreate, response: Response
+    request: Request,
+    db: DbDep,
+    settings: SettingsDep,
+    caller: CallerDep,
+    body: ShopCreate,
+    response: Response,
 ) -> ShopOut:
-    doc = await shop_service.create_shop(db, caller, body)
+    doc = await shop_service.create_shop(request, db, settings, caller, body)
     response.headers["Location"] = f"/api/v1/shops/{doc['_id']}"
     response.headers["ETag"] = etag(doc["version"])
     return await shop_service.get_shop(db, caller, doc["_id"])
@@ -64,7 +69,7 @@ async def get_shop(shop_id: UUID, db: DbDep, caller: CallerDep, response: Respon
     "/{shop_id}",
     response_model=ShopOut,
     responses=error_responses(401, 403, 404, 412, 422),
-    summary="Rename or archive a shop",
+    summary="Rename a shop (owner), or suspend / reactivate it (system admin)",
 )
 async def update_shop(
     shop_id: UUID,

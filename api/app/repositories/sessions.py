@@ -19,6 +19,8 @@ INDEXES = [
         name="user_created_at",
     ),
     IndexModel([("expires_at", ASCENDING)], name="expires_at_ttl", expireAfterSeconds=0),
+    # Revoking a phone signs out everyone on it.
+    IndexModel([("device_id", ASCENDING)], name="device_id"),
 ]
 
 
@@ -49,8 +51,8 @@ def new_session_doc(
     }
 
 
-async def insert(db: Database, doc: Document) -> None:
-    await db[COLLECTION].insert_one(doc)
+async def insert(db: Database, doc: Document, session: Session | None = None) -> None:
+    await db[COLLECTION].insert_one(doc, session=session)
 
 
 async def get(db: Database, session_id: UUID) -> Document | None:
@@ -60,20 +62,33 @@ async def get(db: Database, session_id: UUID) -> Document | None:
 async def rotate(
     db: Database,
     session_id: UUID,
-    old_hash: str,
+    current_hash: str,
     new_hash: str,
     ip: str,
     expires_at: datetime,
+    *,
+    prev_hash: str,
+    prev_valid_until: datetime,
+    expect_prev: str | None = None,
 ) -> bool:
-    """Swap the refresh secret only if `old_hash` is still current (atomic: one winner).
+    """Swap the refresh secret only if `current_hash` is still current (atomic: one winner).
+
+    `prev_hash` stays acceptable until `prev_valid_until` or until its successor is used, so a
+    phone whose refresh response was lost can retry with it. `expect_prev` guards that retry
+    path: it only rotates while the replayed hash is still the remembered previous one.
 
     Sliding expiry: a device that keeps refreshing stays signed in.
     """
+    query: Document = {"_id": session_id, "refresh_hash": current_hash, "revoked_at": None}
+    if expect_prev is not None:
+        query["prev_refresh_hash"] = expect_prev
     result = await db[COLLECTION].update_one(
-        {"_id": session_id, "refresh_hash": old_hash, "revoked_at": None},
+        query,
         {
             "$set": {
                 "refresh_hash": new_hash,
+                "prev_refresh_hash": prev_hash,
+                "prev_valid_until": prev_valid_until,
                 "last_used_at": utcnow(),
                 "ip": ip,
                 "expires_at": expires_at,
@@ -112,3 +127,14 @@ async def revoke_all_for_user(
 async def list_page(db: Database, query: PageQuery) -> list[Document]:
     cursor = db[COLLECTION].find(query.filter).sort(query.sort).limit(query.limit + 1)
     return await cursor.to_list()
+
+
+async def revoke_all_for_device(
+    db: Database, device_id: UUID, reason: str, session: Session | None = None
+) -> int:
+    result = await db[COLLECTION].update_many(
+        {"device_id": device_id, "revoked_at": None},
+        {"$set": {"revoked_at": utcnow(), "revoked_reason": reason}},
+        session=session,
+    )
+    return result.modified_count

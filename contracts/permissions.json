@@ -1,0 +1,26 @@
+{
+  "$comment": "Roles and permissions shared by the API (app/core/permissions.py) and the app (src/domain/permissions.ts). Code checks permissions, never role names. ADR 0005.",
+  "roles": {
+    "system_admin": "Approves new owners; manages owners, shops, users and devices; reads every audit log. Always online. Does not sell.",
+    "owner": "Owns one or more shops: catalogue, stock, sales, reports, cashiers and devices.",
+    "cashier": "Sells in one shop. Extra permissions are granted per cashier by the owner."
+  },
+  "shop_permissions": {
+    "shop:manage": "Rename the shop",
+    "members:read": "View the shop's team",
+    "members:manage": "Create cashiers, set their PINs and permissions, remove them",
+    "devices:manage": "Register and revoke the shop's phones",
+    "audit_logs:read": "View the shop's activity log",
+    "catalogue:read": "View items and categories",
+    "catalogue:write": "Create and edit items and categories",
+    "stock:write": "Record restocks, damage, losses and stock counts",
+    "costs:read": "See cost prices, profit and margins",
+    "sales:create": "Sell",
+    "sales:read": "View every sale in the shop, not only your own",
+    "sales:refund": "Reverse sales",
+    "reports:read": "View reports"
+  },
+  "owner": "all",
+  "cashier_defaults": ["catalogue:read", "sales:create"],
+  "cashier_grantable": ["sales:read", "sales:refund", "catalogue:write", "stock:write", "costs:read", "reports:read"]
+}

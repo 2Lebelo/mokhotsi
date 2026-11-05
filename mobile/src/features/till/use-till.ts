@@ -32,8 +32,10 @@ export function useTill() {
     const resolution = resolveRecognition(store.catalogue, recognition);
     switch (resolution.status) {
       case "matched":
+        feedback.beep();
         return addVariant(resolution.variant.id);
       case "choose-variant":
+        feedback.beep();
         feedback.warning();
         return dispatch({
           type: "choose-variant",

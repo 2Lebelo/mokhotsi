@@ -1,104 +1,175 @@
-"""Small HTTP helpers shared by the API tests."""
+"""Small HTTP helpers shared by the API tests: PIN sign-in, registered phones, approval."""
 
+import asyncio
+import itertools
+from dataclasses import dataclass
 from typing import Any
-from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from app.core.permissions import Role
-from app.core.security import hash_password
+from app.core.security import hash_pin
 from app.repositories import users
 
-ADMIN_EMAIL = "admin@mokhotsi.co.ls"
-ADMIN_PASSWORD = "admin-password-1"  # noqa: S105 — test fixture
-TEMP_PASSWORD = "temporary-pass-1"  # noqa: S105
-NEW_PASSWORD = "my-own-password-1"  # noqa: S105
+ADMIN_PHONE = "+26650000001"
+ADMIN_PIN = "40817"
+OWNER_PIN = "52914"
+CASHIER_PIN = "73051"
 
 V1 = "/api/v1"
+
+_phones = itertools.count(1)
+
+
+def unique_phone() -> str:
+    """A fresh Lesotho number (+266 and 8 digits) for each owner in a test run."""
+    return f"+2666{next(_phones):07d}"  # The admin is +2665…
 
 
 def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def insert_admin(mongo: Any, email: str = ADMIN_EMAIL, password: str = ADMIN_PASSWORD) -> None:
-    """What `python -m app.cli create-admin` does, without the CLI."""
+def error_code(response: Any) -> str:
+    return response.json()["error"]["code"]
+
+
+def new_device(name: str = "Test phone") -> dict[str, str]:
+    return {"name": name, "platform": "android"}
+
+
+@dataclass(frozen=True)
+class Device:
+    device_id: str
+    device_secret: str
+
+    def credential(self) -> dict[str, str]:
+        return {"device_id": self.device_id, "device_secret": self.device_secret}
+
+
+def device_of(tokens: dict[str, Any]) -> Device:
+    """The phone a sign-in or registration just registered."""
+    issued = tokens["device"]
+    assert issued is not None, "this sign-in reused a registered phone"
+    return Device(issued["device_id"], issued["device_secret"])
+
+
+def insert_admin(mongo: Any, phone: str = ADMIN_PHONE, pin: str = ADMIN_PIN) -> None:
+    """What `python -m app.cli seed-admin` does, without the CLI."""
     mongo["users"].insert_one(
         users.new_user_doc(
-            email=email,
+            phone=phone,
             name="Admin",
             role=Role.SYSTEM_ADMIN,
-            password_hash=hash_password(password),
-            must_change_password=False,
+            pin_hash=asyncio.run(hash_pin(pin)),
             created_by=None,
         )
     )
 
 
-def login(client: TestClient, email: str, password: str, **extra: Any) -> dict[str, Any]:
+def sign_in(
+    client: TestClient, phone: str, pin: str, device: Device | None = None
+) -> dict[str, Any]:
+    """PIN grant; registers a new phone unless `device` is given."""
     response = client.post(
         f"{V1}/tokens",
-        json={"grant_type": "password", "email": email, "password": password, **extra},
+        json={
+            "grant_type": "pin",
+            "phone": phone,
+            "pin": pin,
+            "device": device.credential() if device else new_device(),
+        },
     )
     assert response.status_code == 200, response.text
     return response.json()
 
 
+def sign_in_on_device(client: TestClient, device: Device, shop_id: str, pin: str) -> Any:
+    return client.post(
+        f"{V1}/tokens",
+        json={"grant_type": "device_pin", **device.credential(), "shop_id": shop_id, "pin": pin},
+    )
+
+
+def device_headers(client: TestClient, device: Device) -> dict[str, str]:
+    response = client.post(f"{V1}/tokens", json={"grant_type": "device", **device.credential()})
+    assert response.status_code == 200, response.text
+    return bearer(response.json()["access_token"])
+
+
 def admin_headers(client: TestClient, mongo: Any) -> dict[str, str]:
     insert_admin(mongo)
-    return bearer(login(client, ADMIN_EMAIL, ADMIN_PASSWORD)["access_token"])
+    return bearer(sign_in(client, ADMIN_PHONE, ADMIN_PIN)["access_token"])
 
 
-def activate(client: TestClient, email: str, temp: str = TEMP_PASSWORD) -> dict[str, str]:
-    """Sign in with a temporary password and replace it; returns auth headers."""
-    headers = bearer(login(client, email, temp)["access_token"])
-    response = client.put(
-        f"{V1}/users/me/password",
-        json={"current_password": temp, "new_password": NEW_PASSWORD},
-        headers=headers,
+def register(
+    client: TestClient, phone: str | None = None, pin: str = OWNER_PIN, name: str = "Owner"
+) -> dict[str, Any]:
+    response = client.post(
+        f"{V1}/registrations",
+        json={"name": name, "phone": phone or unique_phone(), "pin": pin, "device": new_device()},
     )
-    assert response.status_code == 204, response.text
-    return headers
-
-
-def create_keeper(
-    client: TestClient, admin: dict[str, str], shop_name: str | None = "Main Shop"
-) -> tuple[dict[str, Any], dict[str, str], str | None]:
-    """Admin creates a keeper (optionally with a first shop); returns (user, headers, shop_id)."""
-    email = f"keeper-{uuid4().hex[:8]}@mokhotsi.co.ls"
-    body: dict[str, Any] = {
-        "email": email,
-        "name": "Keeper",
-        "role": "shop_keeper",
-        "password": TEMP_PASSWORD,
-    }
-    if shop_name:
-        body["shop_name"] = shop_name
-    response = client.post(f"{V1}/users", json=body, headers=admin)
     assert response.status_code == 201, response.text
-    headers = activate(client, email)
-    me = client.get(f"{V1}/users/me", headers=headers).json()
-    shop_id = me["memberships"][0]["shop_id"] if me["memberships"] else None
-    return response.json(), headers, shop_id
+    return response.json()
 
 
-def create_sitter(
-    client: TestClient, keeper: dict[str, str], shop_id: str, permissions: list[str] | None = None
+def approve(client: TestClient, admin: dict[str, str], user_id: str) -> None:
+    response = client.post(
+        f"{V1}/users/{user_id}/reviews", json={"decision": "approve"}, headers=admin
+    )
+    assert response.status_code == 200, response.text
+
+
+def create_shop(
+    client: TestClient, headers: dict[str, str], name: str, pin: str = OWNER_PIN
+) -> dict[str, Any]:
+    response = client.post(f"{V1}/shops", json={"name": name, "pin": pin}, headers=headers)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+@dataclass(frozen=True)
+class Owner:
+    user: dict[str, Any]
+    headers: dict[str, str]
+    shop_id: str | None
+    device: Device  # The owner's phone, registered to shop_id
+    phone: str
+    pin: str
+
+
+def create_owner(
+    client: TestClient,
+    admin: dict[str, str],
+    shop_name: str | None = "Main Shop",
+    pin: str = OWNER_PIN,
+) -> Owner:
+    """An owner registers on their phone, the admin approves, the owner opens a shop."""
+    phone = unique_phone()
+    tokens = register(client, phone, pin)
+    approve(client, admin, tokens["user"]["id"])
+    headers = bearer(tokens["access_token"])
+    shop_id = create_shop(client, headers, shop_name, pin)["id"] if shop_name else None
+    return Owner(tokens["user"], headers, shop_id, device_of(tokens), phone, pin)
+
+
+def create_cashier(
+    client: TestClient,
+    owner: Owner,
+    pin: str = CASHIER_PIN,
+    permissions: list[str] | None = None,
+    name: str = "Cashier",
+    shop_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    email = f"sitter-{uuid4().hex[:8]}@mokhotsi.co.ls"
+    """The owner adds a cashier; the cashier signs in with their PIN on the owner's phone."""
+    shop_id = shop_id or owner.shop_id
+    assert shop_id is not None
     response = client.post(
         f"{V1}/shops/{shop_id}/members",
-        json={
-            "email": email,
-            "name": "Sitter",
-            "password": TEMP_PASSWORD,
-            "permissions": permissions or [],
-        },
-        headers=keeper,
+        json={"name": name, "pin": pin, "permissions": permissions or []},
+        headers=owner.headers,
     )
     assert response.status_code == 201, response.text
-    return response.json(), activate(client, email)
-
-
-def error_code(response: Any) -> str:
-    return response.json()["error"]["code"]
+    signed_in = sign_in_on_device(client, owner.device, shop_id, pin)
+    assert signed_in.status_code == 200, signed_in.text
+    return response.json(), bearer(signed_in.json()["access_token"])

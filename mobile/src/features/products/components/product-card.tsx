@@ -6,7 +6,7 @@ import type { ProductWithVariants } from "@/db/store";
 import { variantLabel } from "@/domain/units";
 import { formatMoney } from "@/lib/money";
 
-/** A catalogue entry: tap it to edit; each size has its own price and Add. */
+/** A catalogue entry: tap it to edit (when allowed); each size has its own price and Add. */
 export function ProductCard({
   product,
   inCart,
@@ -16,7 +16,8 @@ export function ProductCard({
   product: ProductWithVariants;
   /** Cart quantity per size id. */
   inCart: ReadonlyMap<string, number>;
-  onEdit: () => void;
+  /** Omitted for someone who may not edit products. */
+  onEdit?: () => void;
   onAdd: (variantId: string) => void;
 }) {
   const c = usePalette();
@@ -26,7 +27,8 @@ export function ProductCard({
     >
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${product.name}, ${product.category}. Edit product`}
+        accessibilityLabel={`${product.name}, ${product.category}${onEdit ? ". Edit product" : ""}`}
+        disabled={!onEdit}
         onPress={onEdit}
         style={({ pressed }) => [ui.row, { opacity: pressed ? 0.6 : 1 }]}
       >
@@ -42,12 +44,13 @@ export function ProductCard({
               : ""}
           </Text>
         </View>
-        <Ionicons name="chevron-forward" size={18} color={c.faint} />
+        {onEdit && <Ionicons name="chevron-forward" size={18} color={c.faint} />}
       </Pressable>
       {product.variants.map((variant) => {
         const quantity = inCart.get(variant.id) ?? 0;
         const name = `${product.name} ${variantLabel(variant)}`;
-        const soldOut = variant.stock === 0;
+        // Below zero once another till's sales arrive before a recount.
+        const soldOut = variant.stock <= 0;
         return (
           <View key={variant.id} style={ui.stack}>
             <Divider />

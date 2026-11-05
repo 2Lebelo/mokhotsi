@@ -12,6 +12,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from pymongo.errors import ConnectionFailure, PyMongoError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 log = logging.getLogger("app.errors")
@@ -86,6 +87,28 @@ class PreconditionFailed(AppError):
     code = "precondition_failed"
 
 
+class Gone(AppError):
+    status_code = status.HTTP_410_GONE
+    code = "gone"
+
+
+class PayloadTooLarge(AppError):
+    status_code = status.HTTP_413_CONTENT_TOO_LARGE
+    code = "payload_too_large"
+
+
+class UpgradeRequired(AppError):
+    """The client speaks an older contract than the server accepts."""
+
+    status_code = status.HTTP_426_UPGRADE_REQUIRED
+    code = "client_update_required"
+
+
+class ServiceUnavailable(AppError):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    code = "service_unavailable"
+
+
 class Locked(AppError):
     status_code = status.HTTP_423_LOCKED
     code = "account_locked"
@@ -140,6 +163,20 @@ async def _http_error(_: Request, exc: Exception) -> JSONResponse:
     return _response(exc.status_code, f"http_{exc.status_code}", str(exc.detail))
 
 
+async def _database_error(request: Request, exc: Exception) -> JSONResponse:
+    """Timeouts and lost connections are transient: tell the client to retry (503)."""
+    assert isinstance(exc, PyMongoError)  # noqa: S101
+    if getattr(exc, "timeout", False) or isinstance(exc, ConnectionFailure):
+        log.warning("database unavailable", extra={"path": request.url.path, "error": repr(exc)})
+        return _response(
+            503,
+            "database_unavailable",
+            "The service is busy. Try again shortly.",
+            headers={"Retry-After": "5"},
+        )
+    return await _unhandled(request, exc)
+
+
 async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
     log.exception("unhandled error", extra={"path": request.url.path})
     return _response(500, "internal_error", "Internal server error")
@@ -149,6 +186,7 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppError, _app_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
+    app.add_exception_handler(PyMongoError, _database_error)
     app.add_exception_handler(Exception, _unhandled)
 
 
@@ -158,11 +196,15 @@ _DESCRIPTIONS: dict[int, str] = {
     403: "Authenticated but not allowed",
     404: "Not found (also returned for other tenants' resources)",
     409: "Conflicts with current state (e.g. duplicate email)",
+    410: "No longer available (e.g. a sync cursor older than the retained history)",
     412: "If-Match does not match the current version",
+    413: "Request body too large",
     422: "Validation failed",
     423: "Account temporarily locked after repeated failed logins",
+    426: "The app is too old for this endpoint; update it",
     429: "Rate limited; retry after `Retry-After` seconds",
     501: "Stub: TODO(feature)",
+    503: "Temporarily unavailable; retry after `Retry-After` seconds",
 }
 
 

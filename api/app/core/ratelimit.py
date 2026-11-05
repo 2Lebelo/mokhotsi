@@ -1,8 +1,9 @@
 """Sliding-window rate limiting: Redis in prod (shared across workers), memory in dev/test.
 
-Applied to every /api/v1 request (per user when a valid token is present, else per IP) and,
-more strictly, to password logins (per IP + email). Fails OPEN if Redis is unreachable: an
-outage of the limiter must not take the API down with it.
+Applied to every /api/v1 request (per user or device when a valid token is present, else per
+IP) and, more strictly, to PIN attempts, registrations and PIN changes (`limit_attempts`,
+`limit_subject`). Fails OPEN if Redis is unreachable: an outage of the limiter must not take
+the API down with it.
 """
 
 import logging
@@ -18,7 +19,7 @@ from redis.exceptions import RedisError
 
 from app.core.config import Settings
 from app.core.errors import TooManyRequests
-from app.core.request_meta import client_ip, peek_claims
+from app.core.request_meta import client_ip, peek_subject
 
 log = logging.getLogger("app.ratelimit")
 
@@ -113,24 +114,42 @@ async def rate_limit(request: Request, response: Response) -> None:
     if not settings.rate_limit_enabled:
         return
     limiter: RateLimiter = request.app.state.limiter
-    claims = peek_claims(request, settings)
-    if claims is not None:
-        key, limit = f"rl:user:{claims.sub}", settings.rate_limit_user_per_minute
+    subject = peek_subject(request, settings)
+    if subject is not None:
+        key, limit = f"rl:{subject}", settings.rate_limit_user_per_minute
     else:
-        key, limit = f"rl:ip:{client_ip(request, settings)}", settings.rate_limit_anon_per_minute
+        key, limit = f"rl:ip:{client_ip(request)}", settings.rate_limit_anon_per_minute
     result = await limiter.hit(key, limit)
     if not result.allowed:
         _raise(result, "Too many requests")
     _apply(response, result)
 
 
-async def limit_login(request: Request, email: str) -> None:
-    """Stricter limit for password attempts, keyed by IP + email (slows credential stuffing)."""
+async def limit_attempts(
+    request: Request, scope: str, subject: str, limit: int, window_ms: int = WINDOW_MS
+) -> None:
+    """A stricter limit on one kind of attempt, keyed by client IP + `subject`.
+
+    Runs before any slow PIN hash, so a flood of guesses costs the server almost nothing.
+    """
     settings: Settings = request.app.state.settings
     if not settings.rate_limit_enabled:
         return
     limiter: RateLimiter = request.app.state.limiter
-    key = f"rl:login:{client_ip(request, settings)}:{email.lower()}"
-    result = await limiter.hit(key, settings.rate_limit_login_per_minute)
+    key = f"rl:{scope}:{client_ip(request)}:{subject}"
+    result = await limiter.hit(key, limit, window_ms)
     if not result.allowed:
-        _raise(result, "Too many login attempts")
+        _raise(result, "Too many attempts. Wait a moment and try again.")
+
+
+async def limit_subject(
+    request: Request, scope: str, subject: str, limit: int, window_ms: int
+) -> None:
+    """Like limit_attempts, but across every IP (for one account or phone)."""
+    settings: Settings = request.app.state.settings
+    if not settings.rate_limit_enabled:
+        return
+    limiter: RateLimiter = request.app.state.limiter
+    result = await limiter.hit(f"rl:{scope}:{subject}", limit, window_ms)
+    if not result.allowed:
+        _raise(result, "Too many attempts. Wait a while and try again.")

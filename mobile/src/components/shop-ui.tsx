@@ -1,9 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
-import { useState, type ComponentProps, type PropsWithChildren } from "react";
+import {
+  useState,
+  type ComponentProps,
+  type PropsWithChildren,
+  type ReactElement,
+} from "react";
 import {
   ActivityIndicator,
   Pressable,
+  type RefreshControlProps,
   ScrollView,
   StyleSheet,
   Text,
@@ -55,7 +61,12 @@ export const font = {
 export function Screen({
   children,
   scroll = true,
-}: PropsWithChildren<{ scroll?: boolean }>) {
+  refreshControl,
+}: PropsWithChildren<{
+  scroll?: boolean;
+  /** Pull to refresh, for screens showing server data. */
+  refreshControl?: ReactElement<RefreshControlProps>;
+}>) {
   return (
     <SafeAreaView
       edges={["top", "left", "right"]}
@@ -65,6 +76,7 @@ export function Screen({
         <ScrollView
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={ui.page}
+          refreshControl={refreshControl}
         >
           {children}
         </ScrollView>

@@ -4,18 +4,20 @@ from fastapi import Request
 
 from app.core.config import Settings
 from app.core.errors import Unauthorized
-from app.core.security import AccessClaims, decode_access_token
+from app.core.security import AccessClaims, decode_access_token, decode_device_token
 
 
 def request_id(request: Request) -> str | None:
     return getattr(request.state, "request_id", None)
 
 
-def client_ip(request: Request, settings: Settings) -> str:
-    if settings.trust_proxy_headers:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+def client_ip(request: Request) -> str:
+    """The peer address as resolved by uvicorn.
+
+    Behind a proxy, uvicorn's `--proxy-headers` with `FORWARDED_ALLOW_IPS` replaces it with the
+    client address, taking the rightmost X-Forwarded-For hop the trusted proxy added. Reading the
+    header here would trust its leftmost entry, which the client writes.
+    """
     return request.client.host if request.client else "unknown"
 
 
@@ -42,3 +44,21 @@ def peek_claims(request: Request, settings: Settings) -> AccessClaims | None:
             claims = None
     request.state.peeked_claims = claims
     return claims
+
+
+def peek_subject(request: Request, settings: Settings) -> str | None:
+    """`user:<id>` or `device:<id>` from a signature-verified bearer token, else None.
+
+    Keys rate limits and idempotency records. Many phones share one carrier IP, so a phone
+    with a device token is limited on its own rather than with its neighbours.
+    """
+    claims = peek_claims(request, settings)
+    if claims is not None:
+        return f"user:{claims.sub}"
+    _, _, token = request.headers.get("authorization", "").partition(" ")
+    if token:
+        try:
+            return f"device:{decode_device_token(settings, token).sub}"
+        except Unauthorized:
+            return None
+    return None

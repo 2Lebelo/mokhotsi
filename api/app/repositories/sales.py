@@ -1,36 +1,30 @@
+"""Cash sales as the till recorded them (insert-only facts, sync v2)."""
+
 from uuid import UUID
 
 from pymongo import ASCENDING, IndexModel
 
 from app.core.db import Database, Document, Session
-from app.repositories import _sync_common
 
 COLLECTION = "sales"
 INDEXES = [
-    IndexModel([("shop_id", ASCENDING), ("seq", ASCENDING)], name="shop_seq", unique=True),
-    IndexModel([("shop_id", ASCENDING), ("created_at", ASCENDING)], name="shop_created_at"),
-    # Pull for callers without sales:read (only their own sales).
+    # Snapshot pages (last 90 days) and reports.
     IndexModel(
-        [("shop_id", ASCENDING), ("created_by", ASCENDING), ("seq", ASCENDING)],
-        name="shop_creator_seq",
+        [("shop_id", ASCENDING), ("created_at", ASCENDING), ("_id", ASCENDING)],
+        name="shop_created_at_id",
     ),
 ]
 
 
-async def insert(
-    db: Database, shop_id: UUID, doc: Document, seq: int, session: Session | None = None
-) -> None:
-    """Sales are insert-only; items are embedded."""
-    await db[COLLECTION].insert_one({**doc, "shop_id": shop_id, "seq": seq}, session=session)
-
-
-async def owners(db: Database, ids: list[UUID], session: Session | None = None) -> dict[UUID, UUID]:
-    return await _sync_common.owners(db, COLLECTION, ids, session)
-
-
-async def changes_since(
-    db: Database, shop_id: UUID, after_seq: int, limit: int, created_by: UUID | None = None
-) -> list[Document]:
-    """With `created_by`, only that user's sales."""
-    extra = {"created_by": created_by} if created_by is not None else None
-    return await _sync_common.changes_since(db, COLLECTION, shop_id, after_seq, limit, extra)
+async def items(
+    db: Database, shop_id: UUID, sale_ids: list[UUID], session: Session | None = None
+) -> dict[UUID, list[Document]]:
+    """{sale_id: items} for the sales this shop has (reversals refer to their lines)."""
+    if not sale_ids:
+        return {}
+    cursor = db[COLLECTION].find(
+        {"shop_id": shop_id, "_id": {"$in": sale_ids}},
+        projection={"items.id": 1, "items.variant_id": 1, "items.quantity": 1},
+        session=session,
+    )
+    return {doc["_id"]: doc["items"] async for doc in cursor}

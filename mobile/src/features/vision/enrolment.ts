@@ -14,16 +14,19 @@ export async function saveCorrection(
   productId: string,
   view: EmbeddedView,
 ): Promise<void> {
-  const imageUri = await saveCrop(productId, view.crop);
+  const crop = await saveCrop(productId, view.crop);
   store.embeddings.add({
     productId,
     modelVersion: MANIFEST.embedder.model_version,
     vector: view.vector,
     source: "correction",
-    imageUri,
+    imageUri: crop.uri,
+    imageSha256: crop.sha256,
   });
   deleteFiles(
     store.embeddings.pruneCorrections(productId, LEARNING.maxCorrections),
   );
-  vision.invalidate();
+  // Appended rather than rebuilt: the identify screen is open, and pruned views still show
+  // the same product, so they do no harm until the next rebuild.
+  vision.addToIndex(store, productId, view.vector);
 }

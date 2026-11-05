@@ -14,11 +14,11 @@ class AuditLogOut(BaseModel):
     created_at: datetime
     action: str
     entity: str
-    entity_id: UUID | None
+    entity_id: UUID | str | None  # Roles are keyed by name.
     shop_id: UUID | None
     actor_id: UUID | None
     actor_role: str | None
-    actor_email: str | None
+    actor_phone: str | None = None  # Cashiers have no phone; entries before ADR 0005 neither.
     changes: dict[str, Any] | None
     metadata: dict[str, Any] | None
     request_id: str | None
@@ -29,6 +29,8 @@ class AuditLogOut(BaseModel):
 
 class RoleOut(BaseModel):
     name: Role
+    title: str
+    scope: Literal["system", "shop"]
     description: str
     system_permissions: list[Perm]
     default_shop_permissions: list[Perm]

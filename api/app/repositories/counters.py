@@ -1,8 +1,8 @@
 """Per-shop sequence counter: `{_id: shop_id, seq: <last assigned>}`.
 
 Keyed by `_id = shop_id`, so the built-in `_id` index is the lookup index (none to create).
-One counter per shop is shared by products, embeddings and sales, so a single pull cursor
-orders every change for that shop.
+One counter per shop numbers every entry of its change feed (changes.py), so a single pull
+cursor orders every change for that shop.
 """
 
 from uuid import UUID
@@ -28,3 +28,9 @@ async def reserve(
     )
     assert doc is not None  # noqa: S101 — upsert with AFTER always returns the document
     return int(doc["seq"]) - count + 1
+
+
+async def current(db: Database, shop_id: UUID, session: Session | None = None) -> int:
+    """The last seq assigned in this shop (0 before its first change)."""
+    doc = await db[COLLECTION].find_one({"_id": shop_id}, session=session)
+    return int(doc["seq"]) if doc else 0

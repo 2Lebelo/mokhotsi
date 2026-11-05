@@ -212,6 +212,85 @@ test("the vector index ranks products by their closest view and grows", () => {
   assert.throws(() => index.add("x", new Float32Array(3)), /expects 2/);
 });
 
+// Deterministic pseudo-random numbers (mulberry32), so a failure reproduces.
+function random(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test("the int8 index ranks like exact float32 search, within 0.01 of the true score", () => {
+  const dim = 1280;
+  const next = random(7);
+  // Like MobileNetV2 features: non-negative (ReLU6), sparse-ish, then L2-normalised.
+  const feature = () => {
+    const v = new Float32Array(dim);
+    for (let i = 0; i < dim; i++) v[i] = next() < 0.4 ? next() * 6 : 0;
+    return l2Normalize(v);
+  };
+  const near = (base, noise) => {
+    const v = new Float32Array(dim);
+    for (let i = 0; i < dim; i++) v[i] = Math.max(0, base[i] + (next() - 0.5) * noise);
+    return l2Normalize(v);
+  };
+
+  const rows = [];
+  for (let p = 0; p < 150; p++) {
+    const base = feature();
+    for (let view = 0; view < 4; view++) rows.push({ id: `p${p}`, vector: near(base, 0.05) });
+  }
+  const index = new VectorIndex(dim, 8);
+  for (const row of rows) assert.equal(index.add(row.id, row.vector), true);
+
+  const exact = (query) => {
+    const best = new Map();
+    for (const { id, vector } of rows) {
+      let score = 0;
+      for (let i = 0; i < dim; i++) score += vector[i] * query[i];
+      best.set(id, Math.max(best.get(id) ?? -Infinity, score));
+    }
+    return [...best].sort((a, b) => b[1] - a[1])[0];
+  };
+
+  let agree = 0;
+  const queries = 500;
+  for (let q = 0; q < queries; q++) {
+    const query = near(rows[Math.floor(next() * rows.length)].vector, 0.08);
+    const [want, wantScore] = exact(query);
+    const [got] = index.topK(query, 1);
+    if (got.productId === want) agree++;
+    assert.ok(Math.abs(got.score - wantScore) < 0.01, `score off by ${got.score - wantScore}`);
+  }
+  assert.ok(agree / queries >= 0.99, `top-1 agreed on ${agree}/${queries}`);
+});
+
+test("the index takes stored blobs directly and stops at its row cap", () => {
+  const unit = (x, y) => l2Normalize(new Float32Array([x, y]));
+  const fromVectors = new VectorIndex(2, 1);
+  const fromBlobs = new VectorIndex(2, 1);
+  for (const [id, v] of [["a", unit(1, 0)], ["b", unit(0.3, 0.9)], ["c", unit(0, 1)]]) {
+    fromVectors.add(id, v);
+    fromBlobs.addBlob(id, toBlob(v));
+  }
+  const query = unit(0.5, 0.5);
+  assert.deepEqual(fromBlobs.topK(query, 3), fromVectors.topK(query, 3));
+  assert.throws(() => fromBlobs.addBlob("x", new Uint8Array(4)), /expects 8/);
+
+  const capped = new VectorIndex(2, 1, 2);
+  assert.equal(capped.add("a", unit(1, 0)), true);
+  assert.equal(capped.add("b", unit(0, 1)), true);
+  assert.equal(capped.full, true);
+  assert.equal(capped.add("c", unit(1, 1)), false);
+  assert.equal(capped.size, 2);
+  // A zero vector (nothing stored for it) scores 0 instead of NaN.
+  const zero = new VectorIndex(2, 1);
+  zero.add("z", new Float32Array(2));
+  assert.equal(zero.topK(query, 1)[0].score, 0);
+});
+
 test("stability needs consecutive overlapping boxes of a useful size", () => {
   const box = (x) => ({ x, y: 0.3, width: 0.4, height: 0.4, score: 0.9 });
   let state = UNSTABLE;

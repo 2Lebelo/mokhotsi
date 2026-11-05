@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { MIGRATIONS } from "../src/db/migrations/index.ts";
 import { migrateDatabase, SCHEMA_VERSION } from "../src/db/schema.ts";
-import { ShopStore } from "../src/db/store.ts";
+import { LOCAL_ACTOR, ShopStore } from "../src/db/store.ts";
 import { parsePrice, parseStock } from "../src/lib/money.ts";
 
 // Exercise the production SQL and repository against a real SQLite file.
@@ -21,6 +21,7 @@ function connect(filename) {
     getFirstSync: (sql, ...params) =>
       native.prepare(sql).get(...params) ?? null,
     getAllSync: (sql, ...params) => native.prepare(sql).all(...params),
+    getEachSync: (sql, ...params) => native.prepare(sql).iterate(...params),
     runSync: (sql, ...params) => native.prepare(sql).run(...params),
     withTransactionSync(callback) {
       native.exec("BEGIN");
@@ -35,7 +36,7 @@ function connect(filename) {
   };
 }
 
-function fixture(t, { migrate = true } = {}) {
+function fixture(t, { migrate = true, actor = LOCAL_ACTOR } = {}) {
   const folder = mkdtempSync(join(tmpdir(), "mokhotsi-test-"));
   const filename = join(folder, "shop.db");
   let db = connect(filename);
@@ -45,12 +46,17 @@ function fixture(t, { migrate = true } = {}) {
     assert.equal(dirname(resolve(folder)), resolve(tmpdir()));
     rmSync(folder, { recursive: true, force: true });
   });
+  const context = { newId: randomUUID, clock: () => new Date(), actor };
   return {
     get db() {
       return db;
     },
     get store() {
-      return new ShopStore(db, randomUUID);
+      return new ShopStore(db, context);
+    },
+    /** Marks the shop as registered with a server, so changes are queued. */
+    bind() {
+      db.runSync("UPDATE sync_state SET value = 'bound' WHERE key = 'mode'");
     },
     reopen() {
       db.close();
@@ -533,9 +539,12 @@ test("embeddings are stored per model version and counted per product", (t) => {
   add(sugar, unitVector(0.8, 0.6));
   add(milk, unitVector(0, 1));
   add(milk, unitVector(0, 1), "teach", "older@0");
+  add(sugar, unitVector(0.6, 0.8), "correction");
   f.reopen();
   const vectors = f.store.embeddings.vectors(MODEL);
-  assert.equal(vectors.length, 3);
+  assert.equal(vectors.length, 4);
+  assert.equal(f.store.embeddings.count(MODEL), 4);
+  assert.equal(vectors.at(-1).productId, sugar, "corrections come last, so a full index drops them first");
   assert.deepEqual(
     [...vectors.find((v) => v.productId === milk).vector],
     [0, 1],
@@ -544,7 +553,7 @@ test("embeddings are stored per model version and counted per product", (t) => {
     [...f.store.embeddings.countsByProduct(MODEL)].sort(),
     [
       [milk, 1],
-      [sugar, 2],
+      [sugar, 3],
     ].sort(),
   );
   assert.throws(
@@ -562,7 +571,7 @@ test("photo vectors follow the product's current photo and model version", (t) =
   }).productId;
   saveOne(f.store, { name: "No photo" });
   assert.deepEqual(f.store.embeddings.pendingPhotos(MODEL), [
-    { productId: withPhoto, photoUri: "file:///photos/a.jpg" },
+    { productId: withPhoto, photoUri: "file:///photos/a.jpg", photoSha: null },
   ]);
 
   const photo = {
@@ -1008,4 +1017,416 @@ test("reports measure net takings, profit, write-offs, and the previous period",
   assert.equal(rows[0].variant_label, "2.5 kg");
   assert.equal(rows[0].uncosted_units, 2);
   assert.deepEqual(f.store.reports.products("today", local(2026, 10, 24)), []);
+});
+
+// Sync groundwork: the outbox, the stock ledger, and who made each change.
+
+const ops = (db) =>
+  db
+    .getAllSync("SELECT * FROM outbox ORDER BY seq")
+    .map((row) => ({ ...row, payload: JSON.parse(row.payload) }));
+const movements = (db) =>
+  db.getAllSync("SELECT * FROM stock_movements ORDER BY created_at, rowid");
+
+test("upgrading a v6 database keeps stock, carts, and sales, and starts unregistered", (t) => {
+  const f = fixture(t, { migrate: false });
+  for (const migration of MIGRATIONS.slice(0, 6))
+    f.db.withTransactionSync(() => {
+      migration.up(f.db);
+      f.db.execSync(`PRAGMA user_version = ${migration.version}`);
+    });
+  const now = new Date().toISOString();
+  f.db.runSync(
+    "INSERT INTO products (id, name, category, created_at, updated_at) VALUES ('p1', 'Bread', 'Bakery', ?, ?)",
+    now,
+    now,
+  );
+  f.db.runSync(
+    "INSERT INTO product_variants (id, product_id, size_milli, unit, price_cents, cost_cents, stock, barcode, created_at, updated_at) VALUES ('v1', 'p1', 1000, 'pcs', 1500, 900, 4, '6001234567890', ?, ?)",
+    now,
+    now,
+  );
+  f.db.runSync("INSERT INTO cart_items (variant_id, quantity) VALUES ('v1', 2)");
+  f.db.runSync(
+    "INSERT INTO sales (id, total_cents, created_at) VALUES ('s1', 1500, ?)",
+    now,
+  );
+  f.db.runSync(
+    "INSERT INTO sale_items (id, sale_id, product_id, variant_id, product_name, variant_label, category, quantity, unit_price_cents, line_total_cents) VALUES ('i1', 's1', 'p1', 'v1', 'Bread', 'Each', 'Bakery', 1, 1500, 1500)",
+  );
+  migrateDatabase(f.db);
+
+  assert.equal(f.db.getFirstSync("PRAGMA foreign_keys").foreign_keys, 1);
+  const variant = f.store.catalogue.variant("v1");
+  assert.equal(variant.stock, 4);
+  assert.equal(variant.server_stock, 0);
+  assert.equal(variant.cost_cents, 900);
+  assert.equal(f.store.catalogue.variantByBarcode("6001234567890").id, "v1");
+  assert.equal(f.store.cart.items()[0].quantity, 2);
+  const [sale] = f.store.sales.list();
+  assert.equal(sale.actor_user_id, "local");
+  assert.equal(sale.device_id, "local");
+  assert.equal(f.store.outbox.isBound(), false);
+  // Sales made after the upgrade still work against the rebuilt sizes table.
+  f.store.sales.checkout(randomUUID());
+  assert.equal(f.store.catalogue.variant("v1").stock, 2);
+  assert.deepEqual(ops(f.db), []);
+});
+
+test("an unregistered shop records stock movements but queues nothing", (t) => {
+  const f = fixture(t);
+  const { variantId } = saveOne(f.store);
+  f.store.cart.setQuantity(variantId, 2);
+  f.store.sales.checkout(randomUUID());
+  assert.equal(f.store.outbox.pendingCount(), 0);
+  assert.deepEqual(
+    movements(f.db).map((m) => [m.kind, m.delta, m.op_id]),
+    [
+      ["opening", 12, null],
+      ["sale", -2, null],
+    ],
+  );
+});
+
+test("a registered shop queues the product before its opening stock, without stock in the product", (t) => {
+  const f = fixture(t);
+  f.bind();
+  const { productId, variantId } = saveOne(f.store);
+  const queue = ops(f.db);
+  assert.equal(queue.length, 2);
+  const [productOp, openingOp] = queue;
+  assert.equal(productOp.entity, "products");
+  assert.equal(productOp.entity_id, productId);
+  assert.deepEqual(Object.keys(productOp.payload.variants[0]).sort(), [
+    "archived_at",
+    "barcode",
+    "cost_cents",
+    "id",
+    "position",
+    "price_cents",
+    "size_milli",
+    "unit",
+  ]);
+  assert.equal(openingOp.entity, "stock_movements");
+  assert.deepEqual(
+    [openingOp.payload.kind, openingOp.payload.delta, openingOp.payload.variant_id],
+    ["opening", 12, variantId],
+  );
+  assert.equal(movements(f.db)[0].op_id, openingOp.op_id);
+  // A size saved with no stock needs no movement.
+  saveOne(f.store, { name: "Salt" }, { stock: 0 });
+  assert.equal(ops(f.db).length, 3);
+});
+
+test("repeated product edits leave one op, in its first place, under a new op id", (t) => {
+  const f = fixture(t);
+  f.bind();
+  const { productId, variantId } = saveOne(f.store);
+  const first = ops(f.db)[0];
+  f.store.cart.setQuantity(variantId, 1);
+  const saleId = randomUUID();
+  f.store.sales.checkout(saleId);
+  f.store.catalogue.saveProduct(
+    {
+      ...product({ name: "Maize meal 2" }),
+      variants: [{ ...size({ stock: 11 }), id: variantId, stock_baseline: 11 }],
+    },
+    productId,
+  );
+  const queue = ops(f.db);
+  assert.deepEqual(
+    queue.map((op) => op.entity),
+    ["products", "stock_movements", "sales"],
+  );
+  assert.equal(queue[0].seq, first.seq);
+  assert.notEqual(queue[0].op_id, first.op_id);
+  assert.equal(queue[0].payload.name, "Maize meal 2");
+  assert.equal(
+    queue.findIndex((op) => op.entity_id === saleId),
+    2,
+    "the sale still follows the product it refers to",
+  );
+});
+
+test("a stock edit records the change from what the editor showed, keeping sales made meanwhile", (t) => {
+  const f = fixture(t);
+  f.bind();
+  const { productId, variantId } = saveOne(f.store);
+  // The editor opens showing 12; a sale of 2 is made before it is saved.
+  const opened = f.store.catalogue.product(productId).variants[0].stock;
+  f.store.cart.setQuantity(variantId, 2);
+  f.store.sales.checkout(randomUUID());
+  f.store.catalogue.saveProduct(
+    {
+      ...product(),
+      variants: [{ ...size({ stock: 15 }), id: variantId, stock_baseline: opened }],
+    },
+    productId,
+  );
+  assert.equal(f.store.catalogue.variant(variantId).stock, 13);
+  const adjustments = () =>
+    ops(f.db).filter(
+      (op) => op.entity === "stock_movements" && op.payload.kind === "adjustment",
+    );
+  assert.deepEqual(
+    adjustments().map((op) => op.payload.delta),
+    [3],
+  );
+  // Saving without changing the stock records no movement.
+  f.store.catalogue.saveProduct(
+    {
+      ...product({ category: "Staples" }),
+      variants: [{ ...size({ stock: 13 }), id: variantId, stock_baseline: 13 }],
+    },
+    productId,
+  );
+  assert.equal(adjustments().length, 1);
+  assert.equal(f.store.catalogue.variant(variantId).stock, 13);
+});
+
+test("a sale is one op stamped with its seller; its stock movements ride on it", (t) => {
+  const actor = { userId: "u-cashier", deviceId: "d-till" };
+  const f = fixture(t, { actor });
+  f.bind();
+  const { variantId } = saveOne(f.store);
+  f.store.cart.setQuantity(variantId, 3);
+  const saleId = randomUUID();
+  f.store.sales.checkout(saleId, 10000);
+  const saleOps = ops(f.db).filter((op) => op.entity === "sales");
+  assert.equal(saleOps.length, 1);
+  const [{ payload, op_id }] = saleOps;
+  assert.deepEqual(
+    [payload.actor_user_id, payload.device_id, payload.imported],
+    ["u-cashier", "d-till", false],
+  );
+  assert.equal(payload.total_cents, 9750);
+  assert.equal(payload.change_cents, 250);
+  assert.equal(payload.items[0].quantity, 3);
+  assert.equal(payload.items[0].id, f.store.sales.items(saleId)[0].id);
+  const sale = movements(f.db).find((m) => m.kind === "sale");
+  assert.deepEqual([sale.delta, sale.op_id, sale.ref_id], [-3, op_id, saleId]);
+  assert.equal(sale.actor_user_id, "u-cashier");
+  assert.equal(
+    ops(f.db).filter((op) => op.entity === "stock_movements").length,
+    1,
+    "only the opening stock is its own op",
+  );
+  const [listed] = f.store.sales.list();
+  assert.equal(listed.actor_user_id, "u-cashier");
+  assert.equal(listed.device_id, "d-till");
+});
+
+test("a failure late in checkout rolls back the queued op and the movements too", (t) => {
+  const f = fixture(t);
+  f.bind();
+  const { variantId } = saveOne(f.store);
+  f.store.cart.setQuantity(variantId, 2);
+  const queued = ops(f.db).length;
+  f.db.execSync(
+    "CREATE TEMP TRIGGER fail_movement BEFORE INSERT ON stock_movements WHEN NEW.kind = 'sale' BEGIN SELECT RAISE(ABORT, 'disk full'); END",
+  );
+  assert.throws(() => f.store.sales.checkout(randomUUID()), /disk full/);
+  assert.equal(ops(f.db).length, queued);
+  assert.equal(f.store.sales.list().length, 0);
+  assert.equal(f.store.catalogue.variant(variantId).stock, 12);
+  assert.equal(f.store.cart.items()[0].quantity, 2);
+});
+
+test("a reversal is one op; only restocked lines move stock", (t) => {
+  const f = fixture(t);
+  f.bind();
+  const bread = saveOne(f.store, { name: "Bread" });
+  const milk = saveOne(f.store, { name: "Milk" });
+  f.store.cart.setQuantity(bread.variantId, 2);
+  f.store.cart.setQuantity(milk.variantId, 1);
+  const saleId = randomUUID();
+  f.store.sales.checkout(saleId);
+  const lines = f.store.sales.items(saleId);
+  const breadLine = lines.find((line) => line.product_name === "Bread");
+  const milkLine = lines.find((line) => line.product_name === "Milk");
+  f.store.sales.reverse(
+    randomUUID(),
+    saleId,
+    [
+      { saleItemId: breadLine.id, quantity: 1, restock: true },
+      { saleItemId: milkLine.id, quantity: 1, restock: false },
+    ],
+    "Damaged",
+  );
+  const [reversal] = ops(f.db).filter((op) => op.entity === "reversals");
+  assert.equal(reversal.payload.refund_cents, 2 * 3250);
+  assert.deepEqual(
+    reversal.payload.items.map((item) => [item.sale_item_id, item.restocked]),
+    [
+      [breadLine.id, true],
+      [milkLine.id, false],
+    ],
+  );
+  assert.equal("variant_id" in reversal.payload.items[0], false);
+  const returned = movements(f.db).filter((m) => m.kind === "reversal");
+  assert.deepEqual(
+    returned.map((m) => [m.variant_id, m.delta, m.op_id]),
+    [[bread.variantId, 1, reversal.op_id]],
+  );
+  assert.equal(f.store.catalogue.variant(bread.variantId).stock, 11);
+  assert.equal(f.store.catalogue.variant(milk.variantId).stock, 11);
+});
+
+// A structural check of a value against the sync contract: types, required and extra keys,
+// enums, and integer ranges. Enough to catch drift between the app and the schema.
+const contract = JSON.parse(
+  readFileSync(
+    new URL("../../contracts/sync.v2.schema.json", import.meta.url),
+    "utf8",
+  ),
+);
+function conforms(value, schema, path = "$") {
+  if (schema.$ref) return conforms(value, contract.$defs[schema.$ref.split("/").pop()], path);
+  const types = [schema.type ?? []].flat();
+  const typeOf = (v) =>
+    v === null ? "null" : Array.isArray(v) ? "array" : Number.isInteger(v) ? "integer" : typeof v;
+  if (types.length && !types.includes(typeOf(value)))
+    assert.fail(`${path}: expected ${types.join("|")}, got ${typeOf(value)}`);
+  if (schema.const !== undefined) assert.equal(value, schema.const, path);
+  if (schema.enum) assert.ok(schema.enum.includes(value), `${path}: ${value} not in enum`);
+  if (typeof value === "number") {
+    if (schema.minimum !== undefined) assert.ok(value >= schema.minimum, `${path} below minimum`);
+    if (schema.maximum !== undefined) assert.ok(value <= schema.maximum, `${path} above maximum`);
+    if (schema.not?.const !== undefined) assert.notEqual(value, schema.not.const, path);
+  }
+  if (typeof value === "string" && schema.minLength)
+    assert.ok(value.length >= schema.minLength, `${path} too short`);
+  if (Array.isArray(value)) {
+    if (schema.minItems) assert.ok(value.length >= schema.minItems, `${path} too few items`);
+    if (schema.items) value.forEach((item, i) => conforms(item, schema.items, `${path}[${i}]`));
+  }
+  if (schema.properties && typeOf(value) === "object") {
+    for (const key of schema.required ?? [])
+      assert.ok(key in value, `${path}.${key} is required`);
+    for (const [key, item] of Object.entries(value)) {
+      const property = schema.properties[key];
+      if (!property) assert.fail(`${path}.${key} is not in the contract`);
+      conforms(item, property, `${path}.${key}`);
+    }
+  }
+}
+const PAYLOAD_DEF = {
+  products: "Product",
+  sales: "Sale",
+  reversals: "Reversal",
+  stock_movements: "StockMovement",
+  embeddings: "Embedding",
+};
+
+test("every queued op matches the v2 sync contract", (t) => {
+  const f = fixture(t, { actor: { userId: randomUUID(), deviceId: randomUUID() } });
+  f.bind();
+  const { productId, variantId } = saveOne(f.store, {}, { barcode: "6001234567890", cost_cents: 2000 });
+  f.store.catalogue.saveProduct(
+    {
+      ...product(),
+      variants: [
+        { ...size({ stock: 20, cost_cents: 2000 }), id: variantId, stock_baseline: 12 },
+        size({ size_milli: 1000, stock: 0 }),
+      ],
+    },
+    productId,
+  );
+  f.store.cart.setQuantity(variantId, 2);
+  const saleId = randomUUID();
+  f.store.sales.checkout(saleId, 10000);
+  f.store.sales.reverse(
+    randomUUID(),
+    saleId,
+    [{ saleItemId: f.store.sales.items(saleId)[0].id, quantity: 1, restock: true }],
+    "Wrong item",
+  );
+  const queue = f.store.outbox.pending();
+  assert.deepEqual(
+    queue.map((op) => op.entity),
+    ["products", "stock_movements", "stock_movements", "sales", "reversals"],
+  );
+  for (const op of queue) {
+    const { seq: _, created_at: __, ...wire } = op;
+    conforms(wire, { ...contract.$defs.Op, properties: { ...contract.$defs.Op.properties, payload: {} } });
+    conforms(op.payload, { $ref: `#/$defs/${PAYLOAD_DEF[op.entity]}` }, op.entity);
+  }
+  // The check itself bites: a product must never carry a stock figure.
+  assert.throws(
+    () => conforms({ ...queue[0].payload, stock: 12 }, { $ref: "#/$defs/Product" }),
+    /stock is not in the contract/,
+  );
+  conforms(
+    { device_id: randomUUID(), schema_version: 2, ops: queue.map(({ seq: _, created_at: __, ...op }) => op) },
+    { ...contract.$defs.PushRequest, properties: { ...contract.$defs.PushRequest.properties, ops: {} } },
+  );
+});
+
+test("the first upload and embedding ops match the v2 sync contract", (t) => {
+  const f = fixture(t);
+  const { productId, variantId } = saveOne(f.store, {}, { stock: 5 });
+  f.store.cart.setQuantity(variantId, 2);
+  const saleId = randomUUID();
+  f.store.sales.checkout(saleId);
+  f.store.sales.reverse(
+    randomUUID(),
+    saleId,
+    [{ saleItemId: f.store.sales.items(saleId)[0].id, quantity: 1, restock: true }],
+    "Wrong item",
+  );
+  f.store.embeddings.add({
+    productId,
+    modelVersion: MODEL,
+    vector: unitVector(1, 0),
+    source: "correction",
+    imageUri: "file:///crops/1.jpg",
+    imageSha256: "a".repeat(64),
+  });
+  // What sync/bind.ts queues for the phone that claims the shop's data.
+  f.store.transaction(() => {
+    f.store.sync.bind(randomUUID(), { snapshot: false });
+    f.store.catalogue.queueAll();
+    f.store.stock.queueOpeningStock();
+    f.store.sales.queueImported();
+    f.store.embeddings.queueAll(MODEL);
+  });
+  f.store.embeddings.pruneCorrections(productId, 0);
+  const queue = f.store.outbox.pending();
+  assert.deepEqual(
+    queue.map((op) => `${op.entity}:${op.op}`),
+    [
+      "products:upsert",
+      "stock_movements:upsert",
+      "sales:upsert",
+      "reversals:upsert",
+      "embeddings:upsert",
+      "embeddings:delete",
+    ],
+  );
+  for (const op of queue) {
+    const { seq: _, created_at: __, ...wire } = op;
+    conforms(wire, { ...contract.$defs.Op, properties: { ...contract.$defs.Op.properties, payload: {} } });
+    const def = op.op === "delete" ? "EmbeddingDelete" : PAYLOAD_DEF[op.entity];
+    conforms(op.payload, { $ref: `#/$defs/${def}` }, op.entity);
+  }
+  assert.equal(queue[2].payload.imported, true);
+  assert.equal(queue[1].payload.kind, "opening");
+});
+
+test("stock below zero from other tills shows as out of stock and still blocks selling", (t) => {
+  const f = fixture(t);
+  const { productId, variantId } = saveOne(f.store);
+  f.db.runSync("UPDATE product_variants SET stock = -2 WHERE id = ?", variantId);
+  assert.equal(f.store.sales.dashboard().out_of_stock, 1);
+  assert.throws(() => f.store.cart.add(variantId), /out of stock/);
+  // A recount from the editor brings it back.
+  f.store.catalogue.saveProduct(
+    {
+      ...product(),
+      variants: [{ ...size({ stock: 5 }), id: variantId, stock_baseline: -2 }],
+    },
+    productId,
+  );
+  assert.equal(f.store.catalogue.variant(variantId).stock, 5);
+  assert.equal(f.store.cart.add(variantId).quantity, 1);
 });

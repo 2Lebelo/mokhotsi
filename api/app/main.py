@@ -9,11 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
 from app.core.config import Settings, get_settings
-from app.core.db import create_client
+from app.core.db import MongoDeadlineMiddleware, create_client
 from app.core.errors import install_error_handlers
 from app.core.logging import AccessLogMiddleware, configure_logging
 from app.core.ratelimit import MemoryRateLimiter, RedisRateLimiter
-from app.repositories.indexes import ensure_indexes
+from app.repositories.setup import prepare_database
 from app.routers import health, v1
 
 log = logging.getLogger("app.main")
@@ -21,7 +21,7 @@ log = logging.getLogger("app.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Own the process's MongoDB (and Redis) clients; ensure indexes on startup."""
+    """Own the process's MongoDB (and Redis) clients; prepare the database on startup."""
     settings: Settings = app.state.settings
     client = create_client(settings)
     app.state.mongo = client
@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.limiter = MemoryRateLimiter()
     app.state.redis = redis
     try:
-        await ensure_indexes(app.state.db)
+        await prepare_database(app.state.db)
         yield
     finally:
         await client.close()
@@ -72,6 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "x-request-id",
             ],
         )
+    app.add_middleware(MongoDeadlineMiddleware, seconds=settings.mongo_request_timeout_seconds)
     app.add_middleware(AccessLogMiddleware)
     install_error_handlers(app)
 

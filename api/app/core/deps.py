@@ -1,13 +1,17 @@
 """FastAPI dependencies shared by routers: database, settings, the caller and authorization.
 
-Authentication: `Authorization: Bearer <access token>`. The JWT proves who the caller is; the
-session and user are then loaded on every request, so logout, deactivation and role changes
-apply immediately (the role comes from the database, never from the token).
+Authentication: `Authorization: Bearer <token>`.
+- A person (access token): the session and user are loaded on every request, so logout,
+  deactivation and role changes apply immediately (the role comes from the database, never
+  from the token). A pending owner is signed in but holds no permissions until approved.
+- A phone (device token, `DeviceDep`): the device is loaded on every request, so a revoked
+  phone is refused at once.
 
 Authorization:
 - `require_permission(Perm.X)`: a system permission from the caller's role.
 - `require_shop_permission(Perm.X)`: resolves `{shop_id}` from the path against the caller's
-  membership. Non-members get 404 (never 403), so shop ids cannot be probed.
+  membership. Non-members get 404 (never 403), so shop ids cannot be probed. A suspended shop
+  only allows SUSPENDED_SHOP_ALLOWED.
 """
 
 from collections.abc import Awaitable, Callable
@@ -25,6 +29,7 @@ from app.core.db import Database
 from app.core.errors import AppError, Forbidden, NotFound, Unauthorized
 from app.core.permissions import (
     ADMIN_SHOP_OVERSIGHT,
+    SUSPENDED_SHOP_ALLOWED,
     SYSTEM_PERMISSIONS,
     MemberRole,
     Perm,
@@ -32,8 +37,8 @@ from app.core.permissions import (
     shop_permissions,
 )
 from app.core.request_meta import client_ip, request_id, user_agent
-from app.core.security import decode_access_token
-from app.repositories import memberships, sessions, shops, users
+from app.core.security import decode_access_token, decode_device_token
+from app.repositories import devices, memberships, sessions, shops, users
 
 
 def get_db(request: Request) -> Database:
@@ -49,18 +54,21 @@ def get_app_settings(request: Request) -> Settings:
 DbDep = Annotated[Database, Depends(get_db)]
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 
-_bearer = HTTPBearer(auto_error=False, description="Access token from POST /api/v1/tokens")
+_bearer = HTTPBearer(
+    auto_error=False, description="Access or device token from POST /api/v1/tokens"
+)
 
 
 @dataclass(frozen=True, slots=True)
 class Caller:
     user_id: UUID
-    email: str
+    phone: str | None
     name: str
     role: Role
+    status: str  # "active" or "pending" (no other status can sign in)
     session_id: UUID
     device_id: UUID | None
-    must_change_password: bool
+    must_change_pin: bool
     permissions: frozenset[Perm]
     ip: str
     request_id: str | None
@@ -74,7 +82,7 @@ class Caller:
         return Actor(
             id=self.user_id,
             role=self.role.value,
-            email=self.email,
+            phone=self.phone,
             ip=self.ip,
             request_id=self.request_id,
             user_agent=self.user_agent,
@@ -100,36 +108,39 @@ async def _authenticate(
     ):
         raise Unauthorized("Session expired or revoked", code="session_revoked")
     user = await users.get(db, claims.sub)
-    if user is None or user["status"] != "active":
+    if user is None or user["status"] not in ("active", "pending"):
         raise Unauthorized("Account is disabled", code="account_disabled")
     request.state.user_id = str(user["_id"])  # Picked up by the access log.
     role = Role(user["role"])
     return Caller(
         user_id=user["_id"],
-        email=user["email"],
+        phone=user.get("phone"),
         name=user["name"],
         role=role,
+        status=user["status"],
         session_id=session["_id"],
         device_id=session.get("device_id"),
-        must_change_password=user["must_change_password"],
-        permissions=SYSTEM_PERMISSIONS[role],
-        ip=client_ip(request, settings),
+        must_change_pin=user.get("must_change_pin", False),
+        permissions=SYSTEM_PERMISSIONS[role] if user["status"] == "active" else frozenset(),
+        ip=client_ip(request),
         request_id=request_id(request),
         user_agent=user_agent(request),
     )
 
 
 async def get_current_user_pending(caller: Annotated[Caller, Depends(_authenticate)]) -> Caller:
-    """Any signed-in user, including one who still has to replace a temporary password."""
+    """Any signed-in user, including an owner awaiting approval or one with a temporary PIN."""
     return caller
 
 
 async def get_current_user(caller: Annotated[Caller, Depends(_authenticate)]) -> Caller:
-    """A signed-in user who has set their own password."""
-    if caller.must_change_password:
+    """An approved user who has set their own PIN."""
+    if caller.status == "pending":
+        raise Forbidden("Your registration is waiting for approval", code="registration_pending")
+    if caller.must_change_pin:
         raise Forbidden(
-            "Change your temporary password first (PUT /api/v1/users/me/password)",
-            code="password_change_required",
+            "Change your temporary PIN first (PUT /api/v1/users/me/pin)",
+            code="pin_change_required",
         )
     return caller
 
@@ -176,7 +187,93 @@ def require_shop_permission(perm: Perm) -> Callable[..., Awaitable[ShopAccess]]:
         granted = shop_permissions(role, membership["permissions"])
         if perm not in granted:
             raise Forbidden("You do not have permission to do this", code="permission_denied")
+        if shop["status"] == "suspended" and perm not in SUSPENDED_SHOP_ALLOWED:
+            raise Forbidden("This shop is suspended", code="shop_suspended")
         return ShopAccess(caller, shop, role, granted)
+
+    return dependency
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceCaller:
+    """A registered phone, authenticated by its device token."""
+
+    device: dict
+    ip: str
+    request_id: str | None
+    user_agent: str | None
+
+    @property
+    def device_id(self) -> UUID:
+        return self.device["_id"]
+
+
+async def _authenticate_device(
+    request: Request,
+    db: DbDep,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> DeviceCaller:
+    settings: Settings = request.app.state.settings
+    if credentials is None:
+        raise Unauthorized()
+    claims = decode_device_token(settings, credentials.credentials)
+    device = await devices.get(db, claims.sub)
+    if device is None or device["revoked_at"] is not None:
+        raise Unauthorized("This phone is no longer registered", code="device_revoked")
+    await devices.touch_seen(db, device["_id"])
+    return DeviceCaller(
+        device=device,
+        ip=client_ip(request),
+        request_id=request_id(request),
+        user_agent=user_agent(request),
+    )
+
+
+DeviceDep = Annotated[DeviceCaller, Depends(_authenticate_device)]
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceShopAccess:
+    """A registered phone acting for one of the shops it is set up for (sync)."""
+
+    caller: DeviceCaller
+    shop: dict
+
+    @property
+    def shop_id(self) -> UUID:
+        return self.shop["_id"]
+
+    @property
+    def device_id(self) -> UUID:
+        return self.caller.device_id
+
+    @property
+    def actor(self) -> Actor:
+        """For the audit log: the phone did it (the people behind each op are in the ops)."""
+        return Actor(
+            id=None,
+            role="device",
+            phone=None,
+            ip=self.caller.ip,
+            request_id=self.caller.request_id,
+            user_agent=self.caller.user_agent,
+            device_id=self.caller.device_id,
+        )
+
+
+def require_device_shop(*, write: bool) -> Callable[..., Awaitable[DeviceShopAccess]]:
+    """`{shop_id}` must be one of the phone's shops (else 404, like any other shop). A
+    suspended shop can still be read (pull, snapshot, photos) but takes no new data."""
+
+    async def dependency(shop_id: UUID, caller: DeviceDep, db: DbDep) -> DeviceShopAccess:
+        if shop_id not in caller.device["shop_ids"]:
+            raise NotFound("Shop not found")
+        shop = await shops.get(db, shop_id)
+        if shop is None:
+            raise NotFound("Shop not found")
+        if write and shop["status"] == "suspended":
+            raise Forbidden("This shop is suspended", code="shop_suspended")
+        return DeviceShopAccess(caller, shop)
 
     return dependency
 

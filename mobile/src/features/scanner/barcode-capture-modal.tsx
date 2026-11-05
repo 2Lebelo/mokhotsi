@@ -45,6 +45,7 @@ export function BarcodeCaptureModal({
             hint="Fit the barcode inside the frame"
             onRecognition={(recognition) => {
               if (recognition.kind !== "barcode") return;
+              feedback.beep();
               feedback.success();
               onCapture(recognition.code);
             }}

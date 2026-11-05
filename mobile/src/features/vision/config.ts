@@ -28,12 +28,23 @@ export const PIPELINE = {
   stability: DEFAULT_STABILITY satisfies StabilityOptions,
   /** Seconds without a confident match before hints and "closest matches" appear. */
   hintAfterMs: 6000,
+  /**
+   * A live camera mode that has not processed a single frame this long after the
+   * preview went active is treated as unsupported on this phone (see camera-ladder).
+   */
+  liveStartTimeoutMs: 8000,
 } as const;
 
 export const LEARNING = {
   /** Correction views kept per product (newest first), bounding index growth. */
-  maxCorrections: 20,
+  maxCorrections: 8,
 } as const;
+
+/**
+ * Per-detection logging for tuning on a device. Off by default: at several lines a second it
+ * floods Metro and costs the camera thread, and release builds should log nothing per frame.
+ */
+export const DEBUG_VISION = false;
 
 /**
  * Phones (Android `Build.MODEL`, as reported by expo-device's `modelName`) that

@@ -1,14 +1,18 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { useEffect, useMemo, useState } from "react";
+import Constants from "expo-constants";
+import * as Device from "expo-device";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Linking,
+  Platform,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 import {
   Camera,
+  CommonResolutions,
   useCameraPermission,
   usePhotoOutput,
 } from "react-native-vision-camera";
@@ -21,9 +25,22 @@ import {
   ui,
   usePalette,
 } from "@/components/shop-ui";
+import { useDevice } from "@/auth/device-provider";
 import type { ScoredBox } from "@/ml/geometry";
 import { useCameraVisibility } from "@/features/scanner/use-camera-visibility";
-import { embedImage, uprightImage } from "@/features/vision/still-pipeline";
+import {
+  isCapabilityFailure,
+  ladderFor,
+  nextMode,
+  startMode,
+  type CameraMode,
+} from "@/features/vision/camera-ladder";
+import { PIPELINE } from "@/features/vision/config";
+import {
+  disposeImages,
+  embedImage,
+  uprightImage,
+} from "@/features/vision/still-pipeline";
 import type { EmbeddedView } from "@/features/vision/types";
 import {
   useLivePipeline,
@@ -31,19 +48,62 @@ import {
 } from "@/features/vision/use-live-pipeline";
 import type { VisionModels } from "@/features/vision/vision-service";
 
-export type CameraMode = "live" | "still";
+export type { CameraMode } from "@/features/vision/camera-ladder";
+
+/** A remembered step down holds until the app or the phone's OS (and its drivers) change. */
+const MODE_BUILD = `${Constants.expoConfig?.version ?? "dev"}+${Device.osBuildId ?? "unknown"}`;
+
+function resizerAvailable(): boolean {
+  try {
+    return isResizerAvailable();
+  } catch {
+    return false;
+  }
+}
 
 /**
- * Live recognition needs the GPU resizer (Vulkan on Android). Without it, the
- * same models run on single captured photos instead. `__DEV__` builds can force
- * the fallback to test it on any phone.
+ * The camera mode for this phone (see camera-ladder). Live recognition needs the GPU
+ * resizer (Vulkan on Android); without it, or when the phone refuses both live
+ * formats, the same models run on single captured photos instead. `__DEV__` builds
+ * can force the still fallback to test it on any phone.
  */
-export function cameraModeFor(forceStill = false): CameraMode {
-  try {
-    return !forceStill && isResizerAvailable() ? "live" : "still";
-  } catch {
-    return "still";
-  }
+export function useCameraMode(forceStill = false) {
+  const { device } = useDevice();
+  const [ladder] = useState(() =>
+    ladderFor(Platform.OS, !forceStill && resizerAvailable()),
+  );
+  const [mode, setMode] = useState(() =>
+    startMode(ladder, device.visionCameraMode(), MODE_BUILD),
+  );
+  const current = useRef(mode);
+
+  /** `from` failed before it ever worked: move to the next mode down. */
+  const demote = useCallback(
+    (from: CameraMode, reason: string) => {
+      // A late report from a camera already replaced, or a second failure of the same one.
+      if (from !== current.current) return;
+      const next = nextMode(ladder, from);
+      if (!next) return;
+      const remembered = isCapabilityFailure(reason);
+      if (__DEV__)
+        console.log(
+          `[vision] camera ${from} → ${next}${remembered ? " (remembered)" : ""}: ${reason}`,
+        );
+      if (remembered)
+        device.setVisionCameraMode({ mode: next, build: MODE_BUILD });
+      current.current = next;
+      setMode(next);
+    },
+    [ladder, device],
+  );
+
+  return { mode, demote };
+}
+
+/** Native camera errors carry Java stack traces; the cashier gets a sentence instead. */
+function cameraFailure(error: Error): string {
+  if (__DEV__) console.log(`[vision] camera error: ${error.message}`);
+  return "The camera couldn't start. Close this screen and try again, or search instead.";
 }
 
 type Props = {
@@ -54,6 +114,8 @@ type Props = {
   onView: (view: EmbeddedView) => void;
   onDetection?: (detection: LiveDetection) => void;
   onError: (message: string) => void;
+  /** `mode` failed before processing a single frame: step down (see useCameraMode). */
+  onUnsupported: (mode: CameraMode, reason: string) => void;
   /** Label of the capture button in still mode. */
   captureLabel: string;
   /** An item is being identified: shows a spinner over the preview. */
@@ -65,61 +127,80 @@ type Props = {
  * square the models see, so the guide and detection boxes need no mapping.
  */
 export function VisionCameraView(props: Props) {
-  const c = usePalette();
-  const { hasPermission, canRequestPermission, requestPermission } =
-    useCameraPermission();
+  const { hasPermission } = useCameraPermission();
   if (!hasPermission)
-    return (
-      <View
-        style={[styles.square, styles.center, { backgroundColor: c.surface }]}
-      >
-        <MaterialCommunityIcons
-          name="camera-outline"
-          size={32}
-          color={c.accent}
-        />
-        <Text style={[ui.body, { color: c.text, textAlign: "center" }]}>
-          {canRequestPermission
-            ? "Allow camera access to identify products."
-            : "Camera access is off for Mokhotsi. Turn it on in your phone settings."}
-        </Text>
-        <Button
-          title={canRequestPermission ? "Allow camera" : "Open settings"}
-          onPress={() =>
-            canRequestPermission
-              ? void requestPermission()
-              : void Linking.openSettings()
-          }
-        />
-      </View>
-    );
-  return props.mode === "live" ? (
-    <LiveCamera {...props} />
-  ) : (
+    return <CameraPermission purpose="to identify products" />;
+  // Keyed by mode: stepping down mounts a fresh camera session rather than
+  // reconfiguring the one that failed.
+  return props.mode === "still" ? (
     <StillCamera {...props} />
+  ) : (
+    <LiveCamera key={props.mode} {...props} />
   );
+}
+
+/** Shown in place of a VisionCamera preview until the camera is allowed. */
+export function CameraPermission({ purpose }: { purpose: string }) {
+  const c = usePalette();
+  const { canRequestPermission, requestPermission } = useCameraPermission();
+  return (
+    <View
+      style={[styles.square, styles.center, { backgroundColor: c.surface }]}
+    >
+      <MaterialCommunityIcons name="camera-outline" size={32} color={c.accent} />
+      <Text style={[ui.body, { color: c.text, textAlign: "center" }]}>
+        {canRequestPermission
+          ? `Allow camera access ${purpose}.`
+          : "Camera access is off for Mokhotsi. Turn it on in your phone settings."}
+      </Text>
+      <Button
+        title={canRequestPermission ? "Allow camera" : "Open settings"}
+        onPress={() =>
+          canRequestPermission
+            ? void requestPermission()
+            : void Linking.openSettings()
+        }
+      />
+    </View>
+  );
+}
+
+/** The framing guide drawn over a square preview. */
+export function CameraGuide() {
+  return <Guide box={null} stable={false} />;
 }
 
 function LiveCamera({
   models,
+  mode,
   active,
   onView,
   onDetection,
   onError,
+  onUnsupported,
   identifying = false,
 }: Props) {
   const visible = useCameraVisibility();
   const [box, setBox] = useState<ScoredBox | null>(null);
   const [stable, setStable] = useState(false);
-  const pipeline = useLivePipeline(models, {
-    onDetection(detection) {
-      setBox(detection.box);
-      setStable(detection.stable);
-      onDetection?.(detection);
+  // Until a frame has made it through the detector, a failure means this phone cannot
+  // run this mode; after that, failures are reported as usual.
+  const proven = useRef(false);
+  const pipeline = useLivePipeline(
+    models,
+    mode === "live-native" ? "native" : "yuv",
+    {
+      onDetection(detection) {
+        proven.current = true;
+        setBox(detection.box);
+        setStable(detection.stable);
+        onDetection?.(detection);
+      },
+      onView,
+      onError,
+      onUnsupported: (reason) => onUnsupported(mode, reason),
     },
-    onView,
-    onError,
-  });
+  );
   const { setPaused, frameOutput } = pipeline;
   // A stable outputs array, so detections re-rendering this view never reconfigure the session.
   const outputs = useMemo(() => [frameOutput], [frameOutput]);
@@ -127,6 +208,16 @@ function LiveCamera({
     // Keep the camera thread in step with sheets opening and closing.
     setPaused(!active);
   }, [active, setPaused]);
+  useEffect(() => {
+    // Some phones accept the format but never deliver a frame: step down rather than
+    // show a black square forever. Only counts while the camera is meant to be running.
+    if (!active || !visible || proven.current) return;
+    const timer = setTimeout(() => {
+      if (!proven.current)
+        onUnsupported(mode, `No frames within ${PIPELINE.liveStartTimeoutMs} ms`);
+    }, PIPELINE.liveStartTimeoutMs);
+    return () => clearTimeout(timer);
+  }, [active, visible, mode, onUnsupported]);
   return (
     <View style={styles.square}>
       <Camera
@@ -135,7 +226,11 @@ function LiveCamera({
         isActive={visible}
         outputs={outputs}
         resizeMode="cover"
-        onError={(error) => onError(error.message)}
+        onError={(error) =>
+          proven.current
+            ? onError(cameraFailure(error))
+            : onUnsupported(mode, error.message)
+        }
       />
       <Guide box={active ? box : null} stable={stable} />
       {active && identifying && <IdentifyingOverlay />}
@@ -152,25 +247,32 @@ function StillCamera({
   identifying = false,
 }: Props) {
   const visible = useCameraVisibility();
-  const photoOutput = usePhotoOutput({ qualityPrioritization: "speed" });
+  // The pipeline only needs a 448 px square; the default (4000 × 3000) costs ~48 MB a shot.
+  const photoOutput = usePhotoOutput({
+    targetResolution: CommonResolutions.HD_4_3,
+    qualityPrioritization: "speed",
+  });
   const outputs = useMemo(() => [photoOutput], [photoOutput]);
   const [busy, setBusy] = useState(false);
 
   async function capture() {
     setBusy(true);
+    const owned: { dispose(): void }[] = [];
     try {
       const photo = await photoOutput.capturePhoto(
         { enableShutterSound: false },
         {},
       );
-      const image = await uprightImage(
-        await photo.toImageAsync(),
-        photo.orientation,
-      );
+      owned.push(photo);
+      const decoded = await photo.toImageAsync();
+      owned.push(decoded);
+      const image = await uprightImage(decoded, photo.orientation);
+      owned.push(image);
       onView(await embedImage(models, image, { detect: true }));
     } catch (cause) {
       onError(errorMessage(cause));
     } finally {
+      disposeImages(...owned);
       setBusy(false);
     }
   }
@@ -184,7 +286,7 @@ function StillCamera({
           isActive={visible}
           outputs={outputs}
           resizeMode="cover"
-          onError={(error) => onError(error.message)}
+          onError={(error) => onError(cameraFailure(error))}
         />
         <Guide box={null} stable={false} />
         {(busy || (active && identifying)) && <IdentifyingOverlay />}

@@ -9,18 +9,36 @@ import type {
   SaleItem,
   SaleReversal,
 } from "../types.ts";
+import type {
+  ReversalItemPayload,
+  ReversalPayload,
+  SaleItemPayload,
+  SalePayload,
+} from "../../contracts/sync.ts";
 import { cartTotal, type CartRepository } from "./cart.ts";
-import { nonNegativeInteger, type IdFactory } from "./shared.ts";
+import type { OutboxRepository } from "./outbox.ts";
+import { nonNegativeInteger, type StoreContext } from "./shared.ts";
+import type { StockLedger } from "./stock.ts";
 
 export class SalesRepository {
   private db: SQLiteDatabase;
-  private newId: IdFactory;
+  private context: StoreContext;
   private cart: CartRepository;
+  private outbox: OutboxRepository;
+  private stock: StockLedger;
 
-  constructor(db: SQLiteDatabase, newId: IdFactory, cart: CartRepository) {
+  constructor(
+    db: SQLiteDatabase,
+    context: StoreContext,
+    cart: CartRepository,
+    outbox: OutboxRepository,
+    stock: StockLedger,
+  ) {
     this.db = db;
-    this.newId = newId;
+    this.context = context;
     this.cart = cart;
+    this.outbox = outbox;
+    this.stock = stock;
   }
 
   /**
@@ -29,7 +47,11 @@ export class SalesRepository {
    * the change is stored with the sale for its receipt. Each line keeps the
    * size's cost at the time of sale, so later cost edits never rewrite profit.
    */
-  checkout(saleId: string, tenderedCents?: number, now = new Date()): string {
+  checkout(
+    saleId: string,
+    tenderedCents?: number,
+    now = this.context.clock(),
+  ): string {
     if (!saleId.trim()) throw new Error("A sale reference is required.");
     if (tenderedCents !== undefined)
       nonNegativeInteger(tenderedCents, "Cash received");
@@ -57,41 +79,67 @@ export class SalesRepository {
             `Not enough stock for ${name}. Available: ${item.stock}. Update the cart or stock.`,
           );
       }
+      const { userId, deviceId } = this.context.actor;
       this.db.runSync(
-        "INSERT INTO sales (id, total_cents, tendered_cents, change_cents, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO sales (id, total_cents, tendered_cents, change_cents, actor_user_id, device_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         saleId,
         total,
         tendered,
         tendered - total,
+        userId,
+        deviceId,
         at,
       );
-      for (const item of items) {
-        const updated = this.db.runSync(
-          "UPDATE product_variants SET stock = stock - ?, updated_at = ? WHERE id = ? AND stock >= ? AND archived_at IS NULL",
-          item.quantity,
-          at,
-          item.id,
-          item.quantity,
-        );
-        if (updated.changes !== 1)
-          throw new Error(
-            `Stock changed for ${item.product_name}. Please review the cart.`,
-          );
+      const lines: SaleItemPayload[] = items.map((item) => ({
+        id: this.context.newId(),
+        product_id: item.product_id,
+        variant_id: item.id,
+        product_name: item.product_name,
+        variant_label: variantLabel(item),
+        category: item.category,
+        barcode: item.barcode,
+        quantity: item.quantity,
+        unit_price_cents: item.price_cents,
+        line_total_cents: item.price_cents * item.quantity,
+        unit_cost_cents: item.cost_cents ?? null,
+      }));
+      for (const line of lines)
         this.db.runSync(
           "INSERT INTO sale_items (id, sale_id, product_id, variant_id, product_name, variant_label, category, barcode, quantity, unit_price_cents, line_total_cents, unit_cost_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          this.newId(),
+          line.id,
           saleId,
-          item.product_id,
-          item.id,
-          item.product_name,
-          variantLabel(item),
-          item.category,
-          item.barcode,
-          item.quantity,
-          item.price_cents,
-          item.price_cents * item.quantity,
-          item.cost_cents ?? null,
+          line.product_id,
+          line.variant_id,
+          line.product_name,
+          line.variant_label,
+          line.category,
+          line.barcode,
+          line.quantity,
+          line.unit_price_cents,
+          line.line_total_cents,
+          line.unit_cost_cents,
         );
+      const opId = this.outbox.record("sales", saleId, {
+        id: saleId,
+        total_cents: total,
+        tendered_cents: tendered,
+        change_cents: tendered - total,
+        actor_user_id: userId,
+        device_id: deviceId,
+        imported: false,
+        created_at: at,
+        items: lines,
+      });
+      for (const line of lines) {
+        const moved = this.stock.move(line.variant_id, -line.quantity, "sale", {
+          refId: saleId,
+          opId,
+          requireStock: true,
+        });
+        if (!moved)
+          throw new Error(
+            `Stock changed for ${line.product_name}. Please review the cart.`,
+          );
       }
       this.db.runSync("DELETE FROM cart_items");
     });
@@ -109,7 +157,7 @@ export class SalesRepository {
     saleId: string,
     lines: ReversalLineInput[],
     reason: string,
-    now = new Date(),
+    now = this.context.clock(),
   ): string {
     if (!reversalId.trim())
       throw new Error("A reversal reference is required.");
@@ -162,34 +210,107 @@ export class SalesRepository {
       });
 
       const at = now.toISOString();
+      const { userId, deviceId } = this.context.actor;
       this.db.runSync(
-        "INSERT INTO sale_reversals (id, sale_id, reason, refund_cents, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO sale_reversals (id, sale_id, reason, refund_cents, actor_user_id, device_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         reversalId,
         saleId,
         why,
         refund,
+        userId,
+        deviceId,
         at,
       );
-      for (const { item, line, lineRefund } of rows) {
+      const returned: (ReversalItemPayload & { variant_id: string })[] =
+        rows.map(({ item, line, lineRefund }) => ({
+          id: this.context.newId(),
+          sale_item_id: item.id,
+          variant_id: item.variant_id,
+          quantity: line.quantity,
+          restocked: line.restock,
+          refund_cents: lineRefund,
+        }));
+      for (const line of returned)
         this.db.runSync(
           "INSERT INTO sale_reversal_items (id, reversal_id, sale_item_id, quantity, restocked, refund_cents) VALUES (?, ?, ?, ?, ?, ?)",
-          this.newId(),
+          line.id,
           reversalId,
-          item.id,
+          line.sale_item_id,
           line.quantity,
-          line.restock ? 1 : 0,
-          lineRefund,
+          line.restocked ? 1 : 0,
+          line.refund_cents,
         );
-        if (line.restock)
-          this.db.runSync(
-            "UPDATE product_variants SET stock = stock + ?, updated_at = ? WHERE id = ?",
-            line.quantity,
-            at,
-            item.variant_id,
-          );
-      }
+      const opId = this.outbox.record("reversals", reversalId, {
+        id: reversalId,
+        sale_id: saleId,
+        reason: why,
+        refund_cents: refund,
+        actor_user_id: userId,
+        device_id: deviceId,
+        imported: false,
+        created_at: at,
+        items: returned.map(({ variant_id: _, ...line }) => line),
+      });
+      for (const line of returned)
+        if (line.restocked)
+          this.stock.move(line.variant_id, line.quantity, "reversal", {
+            refId: reversalId,
+            opId,
+          });
     });
     return reversalId;
+  }
+
+  /**
+   * Inside a transaction, for a shop's first upload: queues every sale and reversal made
+   * before the shop was registered, marked imported. The server records them without moving
+   * stock again (it starts from the opening stock, which already reflects them).
+   */
+  queueImported(): void {
+    this.db.runSync("UPDATE sales SET imported = 1");
+    this.db.runSync("UPDATE sale_reversals SET imported = 1");
+    for (const sale of this.db.getAllSync<Sale>(
+      "SELECT * FROM sales ORDER BY created_at, id",
+    )) {
+      const items = this.db.getAllSync<SaleItemPayload>(
+        "SELECT id, product_id, variant_id, product_name, variant_label, category, barcode, quantity, unit_price_cents, line_total_cents, unit_cost_cents FROM sale_items WHERE sale_id = ? ORDER BY rowid",
+        sale.id,
+      );
+      const payload: SalePayload = {
+        id: sale.id,
+        total_cents: sale.total_cents,
+        tendered_cents: sale.tendered_cents,
+        change_cents: sale.change_cents,
+        actor_user_id: sale.actor_user_id,
+        device_id: sale.device_id,
+        imported: true,
+        created_at: sale.created_at,
+        items,
+      };
+      this.outbox.record("sales", sale.id, payload);
+    }
+    for (const reversal of this.db.getAllSync<SaleReversal>(
+      "SELECT * FROM sale_reversals ORDER BY created_at, id",
+    )) {
+      const items = this.db
+        .getAllSync<Omit<ReversalItemPayload, "restocked"> & { restocked: number }>(
+          "SELECT id, sale_item_id, quantity, restocked, refund_cents FROM sale_reversal_items WHERE reversal_id = ? ORDER BY rowid",
+          reversal.id,
+        )
+        .map((item) => ({ ...item, restocked: item.restocked === 1 }));
+      const payload: ReversalPayload = {
+        id: reversal.id,
+        sale_id: reversal.sale_id,
+        reason: reversal.reason,
+        refund_cents: reversal.refund_cents,
+        actor_user_id: reversal.actor_user_id,
+        device_id: reversal.device_id,
+        imported: true,
+        created_at: reversal.created_at,
+        items,
+      };
+      this.outbox.record("reversals", reversal.id, payload);
+    }
   }
 
   list(limit = 50, offset = 0): Sale[] {
@@ -228,7 +349,7 @@ export class SalesRepository {
     const stock = this.db.getFirstSync<
       Pick<Dashboard, "product_count" | "unit_count" | "out_of_stock">
     >(
-      "SELECT (SELECT COUNT(*) FROM products) AS product_count, COALESCE(SUM(stock), 0) AS unit_count, COALESCE(SUM(CASE WHEN stock = 0 THEN 1 ELSE 0 END), 0) AS out_of_stock FROM product_variants WHERE archived_at IS NULL",
+      "SELECT (SELECT COUNT(*) FROM products) AS product_count, COALESCE(SUM(stock), 0) AS unit_count, COALESCE(SUM(CASE WHEN stock <= 0 THEN 1 ELSE 0 END), 0) AS out_of_stock FROM product_variants WHERE archived_at IS NULL",
     )!;
     const today = this.db.getFirstSync<
       Pick<Dashboard, "today_total" | "today_sales">

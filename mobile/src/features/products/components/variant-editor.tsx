@@ -1,5 +1,6 @@
 import { Text, View } from "react-native";
 
+import { useCan } from "@/auth/session-provider";
 import {
   Card,
   Field,
@@ -48,6 +49,10 @@ export function VariantEditor({
   onRemove: () => void;
   onScan: () => void;
 }) {
+  const can = useCan();
+  // A new size needs its opening stock; changing a saved size's stock is a stock count.
+  const stockEditable = !disabled && (variant.id === null || can("stock:write"));
+  const seesCosts = can("costs:read");
   const c = usePalette();
   const label = previewLabel(variant);
   const counted = isCountUnit(variant.unit);
@@ -122,11 +127,12 @@ export function VariantEditor({
             value={variant.stock}
             onChangeText={(value) => onChange("stock", value)}
             maxLength={16}
-            editable={!disabled}
+            editable={stockEditable}
             error={errors.stock}
           />
         </View>
       </View>
+      {seesCosts && (
       <View style={[ui.row, { alignItems: "flex-start" }]}>
         <View style={ui.grow}>
           <Field
@@ -178,7 +184,8 @@ export function VariantEditor({
           </View>
         </View>
       </View>
-      {loss && (
+      )}
+      {seesCosts && loss && (
         <Text style={[ui.caption, { color: c.danger, marginTop: -4 }]}>
           The cost is higher than the selling price, so each sale loses money.
         </Text>

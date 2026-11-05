@@ -39,6 +39,11 @@ function DebugPanel({
     setFps(times.current.length / 2);
   }, [detection]);
 
+  // Never dispose() an image once it is a view prop; the garbage collector frees it instead.
+  // Fabric deep-freezes host props on mount in dev, and dispose() on a frozen hybrid object
+  // throws. On Android, dispose() also recycles the bitmap on this thread while the view
+  // swaps bitmaps later on the UI thread, so the view could draw a recycled bitmap and crash.
+  // The crops are small (~200 KB at 2/s), and Nitro reports their size to Hermes.
   const crop = useMemo(
     () =>
       view
