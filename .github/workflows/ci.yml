@@ -41,7 +41,7 @@ jobs:
       - name: Start MongoDB replica set
         working-directory: .
         run: |
-          docker run -d --name mongo -p 27017:27017 mongo:8 --replSet rs0 --bind_ip_all
+          docker run -d --name mongo -p 27017:27017 mongo:8@sha256:0e900a3364da37b76d642b73b0bba56bd4c6c509ab470cf700436fd866bee3ff --replSet rs0 --bind_ip_all
           for i in $(seq 1 30); do
             docker exec mongo mongosh --quiet --eval "db.adminCommand('ping').ok" && break
             sleep 2
