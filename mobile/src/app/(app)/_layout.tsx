@@ -39,6 +39,7 @@ export default function AppLayout() {
             <Stack.Screen name="users" />
             <Stack.Screen name="shops" />
             <Stack.Screen name="pin" />
+            <Stack.Screen name="evaluation" />
           </Stack>
         </VisionProvider>
       </ShopProvider>
