@@ -23,6 +23,8 @@ ml/artifacts/*
 !ml/artifacts/.gitkeep
 !ml/artifacts/README.md
 ml/notebooks/.ipynb_checkpoints/
+# Evaluation photo sets are the shop's own pictures: kept local, never committed.
+ml/data/
 *.pt
 *.onnx
 *.h5
