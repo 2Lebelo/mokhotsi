@@ -4,7 +4,8 @@ Inputs:
   --model       detector | embedder
   --tflite      Path to the exported .tflite file.
   --images      Folder of sample product photos (jpg/png).
-  --weights     Source weights for the detector (.pt); the embedder rebuilds MobileNetV2.
+  --weights     Source weights (.pt for the detector, the trained MobileNetV2+ArcFace
+                checkpoint for the embedder).
   --min-cosine  Embedder: minimum cosine(reference, tflite) per image (default 0.995).
   --min-iou     Detector: minimum IoU of the top box per image (default 0.9).
 

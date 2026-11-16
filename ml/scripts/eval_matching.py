@@ -17,10 +17,10 @@ Inputs:
   --out         JSON report path (default: ml/artifacts/eval_matching.json). A per-query CSV,
                 a Markdown summary and charts are written next to it.
 
-Outputs, at the app's operating point (manifest accept_threshold and margin) and per threshold:
-  top-1 accuracy, top-3 hit rate, rank-1 accuracy, false-accept rate on unknown items, reject
-  rate, per-product accuracy, a confusion matrix, detector hit rate, desktop latency per stage,
-  and a suggested `accept_threshold` (copy it into manifest.json only after reviewing it).
+Outputs, at the app's operating point (manifest match_threshold and match_margin) and per
+threshold: top-1 accuracy, top-3 hit rate, rank-1 accuracy, false-accept rate on unknown items,
+reject rate, per-product accuracy, a confusion matrix, detector hit rate, desktop latency per
+stage, and a suggested `match_threshold` (copy it into manifest.json only after reviewing it).
 
 Decisions here are single-view. On the phone the live camera also needs 2 of the last 3
 views to agree, which is stricter: treat these as the per-view figures.
@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--embedder", type=Path, default=MODELS_DIR / "embedder.tflite")
+    parser.add_argument("--embedder", type=Path, default=MODELS_DIR / "embedder_f16.tflite")
     parser.add_argument("--detector", type=Path, default=MODELS_DIR / "detector.tflite")
     parser.add_argument("--no-detector", action="store_true")
     parser.add_argument("--float-index", action="store_true")
@@ -130,7 +130,7 @@ def suggest(sweep: list[dict]) -> dict:
 
     best = max(sweep, key=key)
     return {
-        "accept_threshold": best["threshold"],
+        "match_threshold": best["threshold"],
         "rule": "maximise correct decisions over known + unknown queries; "
         "ties -> lower false-accept rate -> higher threshold",
     }
@@ -147,8 +147,9 @@ def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     args = parse_args()
     manifest = load_manifest(args.manifest)
-    matching = manifest["matching"]
-    accept, margin, top_k = matching["accept_threshold"], matching["margin"], matching["top_k"]
+    embedder_spec = manifest["embedder"]
+    accept, margin = embedder_spec["match_threshold"], embedder_spec["match_margin"]
+    top_k = manifest["matching"]["top_k"]
     detector = None if args.no_detector else args.detector
     models = Models(manifest, detector, args.embedder, args.threads)
 
@@ -363,7 +364,7 @@ def markdown_report(report: dict, latency: dict, accept: float, margin: float) -
             ],
         ),
         "",
-        f"Suggested accept_threshold: **{report['suggested']['accept_threshold']}** "
+        f"Suggested match_threshold: **{report['suggested']['match_threshold']}** "
         f"({report['suggested']['rule']}).",
         "",
         "## Per product",

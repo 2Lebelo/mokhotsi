@@ -33,15 +33,23 @@ test("the bundled manifest is valid and describes the inspected models", () => {
   assert.deepEqual(manifest.detector.output, [5, 2100]);
   assert.deepEqual(inputShape(manifest.embedder), [1, 224, 224, 3]);
   assert.deepEqual(manifest.embedder.input_range, [-1, 1]);
-  assert.equal(manifest.embedder.dim, 1280);
+  assert.equal(manifest.embedder.dim, 256);
+  assert.equal(manifest.embedder.file, "embedder_f16.tflite");
+  assert.equal(manifest.embedder.resize, "letterbox");
+  assert.equal(manifest.embedder.match_threshold, 0.5);
+  assert.equal(manifest.embedder.match_margin, 0.1);
+  assert.match(manifest.embedder.sha256, /^[0-9a-f]{64}$/);
   assert.equal(manifest.detector.show_threshold, 0.6);
   assert.equal(manifest.detector.keep_threshold, 0.4);
 });
 
 test("invalid manifests and mismatched models are rejected with the reason", () => {
   const broken = structuredClone(bundled);
-  broken.embedder.layout = "hwc";
-  assert.throws(() => parseManifest(broken), /embedder.layout/);
+  broken.embedder.resize = "stretch";
+  assert.throws(() => parseManifest(broken), /embedder.resize/);
+  const badHash = structuredClone(bundled);
+  badHash.embedder.sha256 = "not-a-hash";
+  assert.throws(() => parseManifest(badHash), /embedder.sha256/);
   const noScores = structuredClone(bundled);
   noScores.detector.output = [4, 2100];
   assert.throws(() => parseManifest(noScores), /at least 5/);
@@ -72,9 +80,9 @@ test("invalid manifests and mismatched models are rejected with the reason", () 
     () =>
       assertModelIO(
         "embedder",
-        model([1, 224, 224, 3], [1, 1280], "uint8"),
+        model([1, 224, 224, 3], [1, 256], "uint8"),
         [1, 224, 224, 3],
-        [1, 1280],
+        [1, 256],
       ),
     /input type uint8/,
   );
@@ -223,17 +231,17 @@ function random(seed) {
 }
 
 test("the int8 index ranks like exact float32 search, within 0.01 of the true score", () => {
-  const dim = 1280;
+  const dim = 256;
   const next = random(7);
-  // Like MobileNetV2 features: non-negative (ReLU6), sparse-ish, then L2-normalised.
+  // Like ArcFace embeddings: dense, signed, then L2-normalised.
   const feature = () => {
     const v = new Float32Array(dim);
-    for (let i = 0; i < dim; i++) v[i] = next() < 0.4 ? next() * 6 : 0;
+    for (let i = 0; i < dim; i++) v[i] = next() * 2 - 1;
     return l2Normalize(v);
   };
   const near = (base, noise) => {
     const v = new Float32Array(dim);
-    for (let i = 0; i < dim; i++) v[i] = Math.max(0, base[i] + (next() - 0.5) * noise);
+    for (let i = 0; i < dim; i++) v[i] = base[i] + (next() - 0.5) * noise;
     return l2Normalize(v);
   };
 
@@ -309,7 +317,7 @@ test("stability needs consecutive overlapping boxes of a useful size", () => {
 });
 
 test("the voter locks only on repeated, confident, clear wins", () => {
-  const voter = new MatchVoter({ accept_threshold: 0.6, margin: 0.05 });
+  const voter = new MatchVoter({ match_threshold: 0.6, match_margin: 0.05 });
   const rank = (top, score, second = 0.1) => [
     { productId: top, score },
     { productId: "other", score: second },

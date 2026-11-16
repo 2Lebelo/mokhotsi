@@ -68,15 +68,15 @@ export function runContext(
     thresholds: {
       detectorShow: MANIFEST.detector.show_threshold,
       detectorKeep: MANIFEST.detector.keep_threshold,
-      accept: MANIFEST.matching.accept_threshold,
-      margin: MANIFEST.matching.margin,
+      accept: MANIFEST.embedder.match_threshold,
+      margin: MANIFEST.embedder.match_margin,
       topK: MANIFEST.matching.top_k,
       voterWindow: EVALUATION.voterWindow,
       voterNeeded: EVALUATION.voterNeeded,
     },
     pipeline: {
       detectorMaxFps: MANIFEST.detector.max_fps,
-      embedderMaxPerSecond: MANIFEST.embedder.max_per_second,
+      embedderMaxPerSecond: PIPELINE.embedderMaxPerSecond,
       stableFrames: PIPELINE.stability.frames,
       cropPad: PIPELINE.cropPad,
       trialTimeoutMs: EVALUATION.trialTimeoutMs,
@@ -141,9 +141,9 @@ export function useEvaluationTrials(
       }),
       // A still photo is one view, so it must win on its own (window 1, needed 1).
       voter: still
-        ? new MatchVoter(MANIFEST.matching, 1, 1)
+        ? new MatchVoter(MANIFEST.embedder, 1, 1)
         : new MatchVoter(
-            MANIFEST.matching,
+            MANIFEST.embedder,
             EVALUATION.voterWindow,
             EVALUATION.voterNeeded,
           ),

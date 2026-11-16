@@ -1,9 +1,9 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "detector": {
     "file": "detector.tflite",
     "arch": "yolov8n",
-    "model_version": "yolov8n-320-1cls-grocery-ft4@2026-10-19",
+    "model_version": "yolov8n-320-1cls-grocery-ft4-f16@2026-11-16",
     "input": [320, 320, 3],
     "layout": "nchw",
     "dtype": "float32",
@@ -14,19 +14,18 @@
     "max_fps": 8
   },
   "embedder": {
-    "file": "embedder.tflite",
-    "arch": "mobilenet_v2",
-    "model_version": "mobilenet_v2-imagenet-224-1280@2026-10-10",
+    "arch": "mobilenetv2_arcface",
+    "model_version": "mobilenetv2_arcface_256-224-f16@2026-11-16",
     "input": [224, 224, 3],
-    "layout": "nhwc",
-    "dtype": "float32",
     "input_range": [-1, 1],
-    "dim": 1280,
-    "max_per_second": 2
+    "resize": "letterbox",
+    "dim": 256,
+    "match_threshold": 0.50,
+    "match_margin": 0.10,
+    "file": "embedder_f16.tflite",
+    "sha256": "9ea1f90df039b53230b9e3afc63d3d705f06b9a3822d06ab24817e9fadb2c1ca"
   },
   "matching": {
-    "accept_threshold": 0.6,
-    "margin": 0.03,
     "top_k": 3
   }
 }

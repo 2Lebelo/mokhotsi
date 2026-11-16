@@ -10,7 +10,7 @@ export const MANIFEST = parseManifest(manifestJson);
 /* eslint-disable @typescript-eslint/no-require-imports -- Metro bundles assets only via static require(). */
 export const MODEL_FILES: Readonly<Record<string, number>> = {
   "detector.tflite": require("@/assets/models/detector.tflite"),
-  "embedder.tflite": require("@/assets/models/embedder.tflite"),
+  "embedder_f16.tflite": require("@/assets/models/embedder_f16.tflite"),
 };
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -25,6 +25,8 @@ export const PIPELINE = {
    * looser, so an item held nearer or further from the camera still matches.
    */
   photoCropPads: [0.08, 0.25],
+  /** Embeddings per second at most while an item is held still (an app throttle, not a model property). */
+  embedderMaxPerSecond: 2,
   stability: DEFAULT_STABILITY satisfies StabilityOptions,
   /** Seconds without a confident match before hints and "closest matches" appear. */
   hintAfterMs: 6000,

@@ -37,7 +37,7 @@ max-line-length = 120
 "tests/*" = ["S101"]  # pytest asserts.
 
 [tool.ruff.lint.isort]
-known-first-party = ["_metrics", "_pipeline", "_plots", "_manifest"]
+known-first-party = ["_metrics", "_pipeline", "_plots", "_manifest", "make_float_models"]
 
 [tool.pytest.ini_options]
 pythonpath = ["scripts"]

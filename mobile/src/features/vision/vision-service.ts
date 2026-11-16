@@ -55,10 +55,22 @@ async function loadOne(
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-async function warmUp(model: TensorflowModel, shape: number[]): Promise<void> {
-  // The first inference initialises GPU kernels; do it now, off the JS thread.
+async function warmUp(
+  name: "detector" | "embedder",
+  model: TensorflowModel,
+  shape: number[],
+): Promise<void> {
+  // The first inference initialises the kernels; do it now, off the JS thread.
+  // The runtime's own failure text never says which model it was, so add that.
   const size = shape.reduce((a, b) => a * b, 1);
-  await model.run([new Float32Array(size).buffer]);
+  try {
+    await model.run([new Float32Array(size).buffer]);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `The ${name} model failed its first run on this phone: ${detail}`,
+    );
+  }
 }
 
 /**
@@ -94,8 +106,8 @@ class VisionService {
           inputShape(MANIFEST.embedder),
           [1, MANIFEST.embedder.dim],
         );
-        await warmUp(detector.model, inputShape(MANIFEST.detector));
-        await warmUp(embedder.model, inputShape(MANIFEST.embedder));
+        await warmUp("detector", detector.model, inputShape(MANIFEST.detector));
+        await warmUp("embedder", embedder.model, inputShape(MANIFEST.embedder));
         console.log(
           `[vision] models ready on ${Device.modelName ?? "unknown phone"}: detector ${detector.gpu ? "gpu" : "cpu"}, embedder ${embedder.gpu ? "gpu" : "cpu"}`,
         );

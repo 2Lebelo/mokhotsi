@@ -18,7 +18,7 @@ export type TrialConditions = {
 
 /**
  * - `locked`: the pipeline committed to a product (live: the 2-of-3 voter; still: one view
- *   that clears the accept threshold and margin).
+ *   that clears the match threshold and margin).
  * - `rejected`: still mode, the one captured view did not clear the threshold.
  * - `timeout`: live mode, no lock before the trial's time limit.
  */

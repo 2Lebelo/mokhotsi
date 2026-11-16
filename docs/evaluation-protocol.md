@@ -31,7 +31,7 @@ The models, thresholds and code are the ones that ship. Nothing is tuned for the
 |---|---|---|---|
 | A | **In-app Evaluation mode** (Menu → Evaluation) | Real-world accuracy, end-to-end recognition time, and the latency of every pipeline stage, on the phone | Phone |
 | B | **Model benchmark** (inside Evaluation mode) | Pure inference and matching time on fixed input, with no camera and no pacing | Phone |
-| C | **Offline photo-set evaluation** (`ml/scripts/eval_matching.py`) | Reproducible per-view accuracy on a fixed photo set; a sweep that justifies the 0.60 threshold | PC |
+| C | **Offline photo-set evaluation** (`ml/scripts/eval_matching.py`) | Reproducible per-view accuracy on a fixed photo set; a sweep that justifies the 0.50 match threshold | PC |
 
 Instrument A runs the same camera pipeline, vector index and voting rule as the till. During
 evaluation it **never** learns from a trial, adds anything to the cart, or changes shop data.
@@ -80,8 +80,8 @@ the Evaluation screen before each block of trials.
    ```bash
    # mobile/.env.local
    EXPO_PUBLIC_EVALUATION=1
-   # then
-   cd mobile && npx expo run:android --variant release
+   # then (builds one ABI for the connected phone and installs it)
+   cd mobile && npm run android:release
    ```
    The Evaluation screen states which build it is running in, and every export records it.
 2. **Phone.** Use the lowest-specification phone the shop would realistically use. Record its
@@ -219,7 +219,7 @@ Development-build runs are left out of every latency table automatically.
   - The confusion matrix: name the products that were confused and explain why, such as similar
     packaging or colour.
   - The offline per-view accuracy and threshold sweep, as corroboration and as the justification
-    for the 0.60 threshold.
+    for the 0.50 match threshold.
 - **4.5.3 Processing latency.**
   - The per-stage table and box plot. Which stage dominates?
   - The benchmark table, for pure inference.

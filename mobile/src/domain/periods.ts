@@ -69,11 +69,18 @@ export function sameLocalDay(a: Date, b: Date): boolean {
   );
 }
 
-/** Percentage change from `previous` to `current`, or null when there is no base. */
+/**
+ * Change from `previous` to `current` as a share of the larger of the two, so the
+ * figure always lies within -100..100 whichever way takings moved (a week that
+ * quadrupled reads 75%, not 300%). Null when there is no base to compare with.
+ */
 export function percentChange(
   current: number,
   previous: number,
 ): number | null {
   if (previous <= 0) return null;
-  return Math.round(((current - previous) / previous) * 100);
+  const base = Math.max(Math.abs(current), Math.abs(previous));
+  const percent = Math.round(((current - previous) / base) * 100);
+  // `+ 0` turns a rounded -0 (a tiny drop) into 0, so it reads as flat, not negative.
+  return Math.max(-100, Math.min(100, percent)) + 0;
 }

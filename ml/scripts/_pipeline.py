@@ -7,7 +7,7 @@ Every step copies the app's code so desktop results describe the shipped behavio
   detector -> arg-max box -> show threshold                   (yolo.ts `decodeBestBox`, `holdBox`)
   box -> padded square -> 224 px embedder input, [-1,1], NHWC (geometry.ts `squareCrop`)
   embedder -> L2 normalise -> int8 index -> best view/product (vector.ts, vector-index.ts)
-  accept: top >= accept_threshold and top - second >= margin  (voter.ts, one view)
+  accept: top >= match_threshold, top - second >= match_margin (voter.ts, one view)
 
 Model shapes and thresholds come from mobile/assets/models/manifest.json. App-side constants
 are mirrored from PIPELINE in mobile/src/features/vision/config.ts: keep them in step.
@@ -210,8 +210,10 @@ class Models:
     def embed(self, source: np.ndarray, region: Box) -> tuple[np.ndarray, float]:
         spec = self.manifest["embedder"]
         start = time.perf_counter()
+        # The embedder tensor contract is fixed float32 NHWC and (since manifest
+        # schema 5) no longer written in the manifest, as in manifest.ts.
         tensor = sample_to_tensor(
-            source, region, spec["input"][0], spec["layout"], tuple(spec["input_range"])
+            source, region, spec["input"][0], spec.get("layout", "nhwc"), tuple(spec["input_range"])
         )
         vector = l2_normalize(self._run(self.embedder, tensor))
         return vector, (time.perf_counter() - start) * 1000

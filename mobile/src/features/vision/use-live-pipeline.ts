@@ -51,7 +51,7 @@ export type LiveStages = {
 
 export type LiveCallbacks = {
   onDetection: (detection: LiveDetection) => void;
-  /** A held-still item was embedded (at most `max_per_second` times a second). */
+  /** A held-still item was embedded (at most `embedderMaxPerSecond` times a second). */
   onView: (view: EmbeddedView) => void;
   onError: (message: string) => void;
   /**
@@ -160,7 +160,7 @@ function useResizers(
 /**
  * The live recognition loop for a VisionCamera frame output. Runs entirely on the
  * camera thread: GPU resize → detector (throttled to `max_fps`) → stability →
- * crop → embedder (throttled to `max_per_second`). Frames arriving while it is
+ * crop → embedder (throttled to `embedderMaxPerSecond`). Frames arriving while it is
  * busy are dropped by the camera. Only small results cross to the JS thread.
  * The iOS resizer needs "yuv"; Android takes either (see camera-ladder for the choice).
  */
@@ -227,7 +227,7 @@ export function useLivePipeline(
   const { detector, embedder } = models;
   const onFrame = useMemo(() => {
     const detectEveryMs = 1000 / DETECTOR.max_fps;
-    const embedEveryMs = 1000 / EMBEDDER.max_per_second;
+    const embedEveryMs = 1000 / PIPELINE.embedderMaxPerSecond;
     const channels = DETECTOR.output[0];
     const show = DETECTOR.show_threshold;
     const keep = DETECTOR.keep_threshold;

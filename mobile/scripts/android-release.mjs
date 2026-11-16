@@ -111,7 +111,9 @@ const windows = process.platform === "win32";
 const started = Date.now();
 run(
   "Gradle release build",
-  windows ? "gradlew.bat" : "./gradlew",
+  // An explicit path: cmd.exe refuses bare .bat names from the working directory
+  // when NoDefaultCurrentDirectoryInExePath is set (the Windows 11 default).
+  windows ? ".\\gradlew.bat" : "./gradlew",
   ["app:assembleRelease", `-PreactNativeArchitectures=${abi}`],
   { cwd: androidDir, shell: windows },
 );
@@ -125,4 +127,11 @@ if (devices.length !== 1) {
   process.exit(0);
 }
 run("adb install", ADB, ["-s", devices[0], "install", "-r", apk]);
+// Release builds reach the PC's API as http://127.0.0.1:8000 (loopback cleartext
+// exception, see plugins/with-loopback-cleartext.js); forward it over USB now.
+if (adb("-s", devices[0], "reverse", "tcp:8000", "tcp:8000") !== null) {
+  console.log("› Forwarded phone port 8000 to this PC (adb reverse) for the API.");
+} else {
+  console.log("› Could not set up `adb reverse tcp:8000 tcp:8000`; run it manually before signing in.");
+}
 console.log("› Installed. Open Mokhotsi on the phone.");
