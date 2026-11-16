@@ -26,6 +26,7 @@ import {
   usePalette,
 } from "@/components/shop-ui";
 import { useDevice } from "@/auth/device-provider";
+import { elapsedMs, nowMs } from "@/ml/clock";
 import type { ScoredBox } from "@/ml/geometry";
 import { useCameraVisibility } from "@/features/scanner/use-camera-visibility";
 import {
@@ -259,16 +260,21 @@ function StillCamera({
     setBusy(true);
     const owned: { dispose(): void }[] = [];
     try {
+      const captureStart = nowMs();
       const photo = await photoOutput.capturePhoto(
         { enableShutterSound: false },
         {},
       );
       owned.push(photo);
+      const captureMs = elapsedMs(captureStart);
+      const decodeStart = nowMs();
       const decoded = await photo.toImageAsync();
       owned.push(decoded);
       const image = await uprightImage(decoded, photo.orientation);
       owned.push(image);
-      onView(await embedImage(models, image, { detect: true }));
+      const decodeMs = elapsedMs(decodeStart);
+      const view = await embedImage(models, image, { detect: true });
+      onView({ ...view, timing: { ...view.timing, captureMs, decodeMs } });
     } catch (cause) {
       onError(errorMessage(cause));
     } finally {

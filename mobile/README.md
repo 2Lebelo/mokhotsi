@@ -87,6 +87,12 @@ The business features have no network dependency. A development build still uses
 Metro to load its development JavaScript. A standalone release build bundles that
 JavaScript and is the later step for deployment without a development computer.
 
+A release build (`npm run android:release`) refuses plain HTTP except to the
+phone's own loopback (`plugins/with-loopback-cleartext.js`), so point
+`EXPO_PUBLIC_API_URL` at `http://127.0.0.1:8000` and forward it over USB with
+`adb reverse tcp:8000 tcp:8000` — the release script sets this up after
+installing. Any other host needs HTTPS in a release build.
+
 ## Verification
 
 ```powershell
@@ -147,7 +153,7 @@ On the phone:
 In development builds the identify screen shows a debug panel: detector
 rate and latency, CPU or GPU, best scores, and the exact crop the embedder saw.
 The crop must look upright, correctly coloured, and tight around the item. Use the
-scores on real items to tune `matching.accept_threshold` and `matching.margin` in
+scores on real items to tune `embedder.match_threshold` and `embedder.match_margin` in
 `assets/models/manifest.json` (the shipped values are starting points).
 
 Native modules (such as `expo-audio`, which plays the scan beep) require
@@ -211,9 +217,13 @@ the app or clearing its storage removes the local database and product photos.
 - `src/app/register.tsx`: product registration and editing.
 - `src/features/photos.ts`: persistent, local photo storage.
 - `assets/models/`: `detector.tflite` (YOLOv8n, 320×320, one "item" class),
-  `embedder.tflite` (MobileNetV2, 224×224 → 1280-d), and `manifest.json`, the
-  contract for shapes, value ranges, thresholds, and model versions. Models are
-  stored with Git LFS and validated against the manifest when loaded.
+  `embedder_f16.tflite` (MobileNetV2 + ArcFace head, 224×224 → 256-d,
+  L2-normalised), and `manifest.json`, the contract for shapes, value ranges,
+  thresholds, and model versions. Models are stored with Git LFS and validated
+  against the manifest when loaded. Both compute in float32 with float16
+  weights: full-int8 models fail their first inference on some phones (32-bit
+  Galaxy A02), so int8 exports are rewritten with
+  `ml/scripts/make_float_models.py` before shipping.
 - `src/ml/`: pure, worklet-safe recognition code: manifest validation, YOLO
   decoding, geometry, tensor sampling, vector maths, the vector index, the
   stability tracker, and the match voter.

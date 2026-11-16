@@ -54,6 +54,7 @@
       ["react-native-fast-tflite", { "enableAndroidGpuLibraries": true }],
       ["expo-build-properties", { "android": { "minSdkVersion": 26 } }],
       "./plugins/with-short-native-build-dirs",
+      "./plugins/with-loopback-cleartext",
       "expo-secure-store",
       [
         "expo-audio",

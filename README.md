@@ -101,6 +101,19 @@ uv run ruff check . && uv run ruff format --check .
 
 Colab notebooks go in `ml/notebooks/`. Export outputs go to `ml/artifacts/` (git-ignored).
 
+### Evaluation (research objective 4, Chapter 4.5)
+
+Recognition accuracy and latency are measured on the phone (Menu → Evaluation, owners only, in
+builds with `EXPO_PUBLIC_EVALUATION=1`) and offline over a photo set. The method, measures and
+commands are in [docs/evaluation-protocol.md](docs/evaluation-protocol.md).
+
+```bash
+cd ml
+uv run pytest
+uv run python scripts/eval_matching.py --enrol-dir data/eval/enrol --query-dir data/eval/query
+uv run python scripts/analyse_trials.py path/to/eval-*.json   # phone exports -> artifacts/chapter4_5/
+```
+
 ## Repository rules
 
 - Layering, sync contract and data flow are in [docs/architecture.md](docs/architecture.md). Why SQLite + outbox: [ADR 0001](docs/adr/0001-offline-first-sqlite-outbox.md). Roles, tenancy and online management with offline selling: [ADR 0002](docs/adr/0002-roles-tenancy-hybrid-connectivity.md).

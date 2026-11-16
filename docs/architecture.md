@@ -40,8 +40,8 @@
 
 1. `useFrameOutput` delivers each camera frame to a **worklet** (never the JS thread).
 2. The GPU resizer (`react-native-vision-camera-resizer`) produces a 640×640×3 float32 buffer, and **YOLOv8n** (`detect`) returns the single main product box.
-3. `crop` resamples the box to 224×224×3, and **MobileNetV2** (`embed`) returns an L2-normalised 1280-d vector.
-4. `VectorIndex.topK` scans one contiguous `Float32Array` (rows = enrolled vectors) with dot products. A match is accepted when its score ≥ `match_threshold` (manifest, placeholder 0.75).
+3. `crop` resamples the box to 224×224×3, and **MobileNetV2+ArcFace** (`embed`) returns an L2-normalised 256-d vector.
+4. `VectorIndex.topK` scans one contiguous `Float32Array` (rows = enrolled vectors) with dot products. A match is accepted when its score ≥ `embedder.match_threshold` and leads the runner-up by ≥ `embedder.match_margin` (both from the manifest).
 5. The result goes back to JS. The cashier confirms, and the sale is written locally.
 
 Models and their shapes are described by `mobile/assets/models/manifest.json`, written by `ml/scripts/_manifest.py` and validated by `src/ml/manifest.ts`. Missing `.tflite` files are reported, not fatal.

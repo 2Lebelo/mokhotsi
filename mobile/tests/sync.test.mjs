@@ -273,8 +273,8 @@ test("float16 vectors round-trip within 1e-4 cosine and reject a wrong length", 
   assert.equal(fromHalf(toHalf(-0.5)), -0.5);
   assert.equal(fromHalf(toHalf(65504)), 65504);
   assert.equal(fromHalf(toHalf(1e6)), Infinity);
-  const vector = l2Normalize(Float32Array.from({ length: 1280 }, (_, i) => Math.abs(Math.sin(i * 7.3))));
-  const back = decodeF16(encodeF16(vector), 1280);
+  const vector = l2Normalize(Float32Array.from({ length: 256 }, (_, i) => Math.sin(i * 7.3)));
+  const back = decodeF16(encodeF16(vector), 256);
   let cosine = 0;
   for (let i = 0; i < vector.length; i++) cosine += vector[i] * back[i];
   assert.ok(cosine > 0.9999, `cosine ${cosine}`);

@@ -145,7 +145,7 @@ function Identify({ models }: { models: VisionModels }) {
         visible={state.sheet.kind === "matches"}
         confident={state.sheet.kind === "matches" && state.sheet.confident}
         matches={toMatches(state.ranking, (id) => store.catalogue.product(id))}
-        acceptThreshold={MANIFEST.matching.accept_threshold}
+        acceptThreshold={MANIFEST.embedder.match_threshold}
         onPick={identify.pick}
         onSearch={identify.search}
         onRetry={identify.retry}

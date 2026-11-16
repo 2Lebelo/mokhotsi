@@ -3,7 +3,7 @@ import { useEffect, useReducer, useState } from "react";
 
 import { errorMessage } from "@/components/shop-ui";
 import { useShop } from "@/db/ShopProvider";
-import { MatchVoter } from "@/ml/voter";
+import { MatchVoter, rankingWins } from "@/ml/voter";
 import { feedback } from "@/features/feedback";
 import { resolveRecognition } from "@/features/recognition/resolve";
 import { warmUpBeep } from "@/features/scan-beep";
@@ -28,15 +28,18 @@ import { vision } from "@/features/vision/vision-service";
 export function useIdentify() {
   const { store, refresh } = useShop();
   const [state, dispatch] = useReducer(identifyReducer, initialIdentifyState);
-  const [voter] = useState(() => new MatchVoter(MANIFEST.matching));
+  const [voter] = useState(() => new MatchVoter(MANIFEST.embedder));
   const index = vision.vectorIndex(store);
 
   useEffect(warmUpBeep, []);
 
   function onView(view: EmbeddedView, { single }: { single: boolean }) {
     const ranking = index.topK(view.vector, MANIFEST.matching.top_k);
-    // A single captured photo is shown directly; live views must win repeatedly.
-    const locked = single ? ranking.length > 0 : voter.push(ranking) !== null;
+    // A single captured photo must clear the match gates on its own; live views
+    // must also win repeatedly (the voter applies the same gates per view).
+    const locked = single
+      ? rankingWins(MANIFEST.embedder, ranking)
+      : voter.push(ranking) !== null;
     if (locked) {
       feedback.beep();
       feedback.success();

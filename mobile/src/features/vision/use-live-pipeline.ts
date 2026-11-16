@@ -11,6 +11,7 @@ import {
   type Synchronizable,
 } from "react-native-worklets";
 
+import { elapsedMs, nowMs } from "@/ml/clock";
 import { squareCrop, type ScoredBox } from "@/ml/geometry";
 import {
   isStable,
@@ -34,11 +35,23 @@ export type LiveDetection = {
   stable: boolean;
   /** Detector time for this frame, including the GPU resize. */
   latencyMs: number;
+  /**
+   * Where this frame's time went (ms, see ml/clock). Optional: read only by the
+   * evaluation screen. `totalMs` covers the whole frame, embedding included.
+   */
+  stages?: LiveStages;
+};
+
+export type LiveStages = {
+  resizeMs: number;
+  detectMs: number;
+  decodeMs: number;
+  totalMs: number;
 };
 
 export type LiveCallbacks = {
   onDetection: (detection: LiveDetection) => void;
-  /** A held-still item was embedded (at most `max_per_second` times a second). */
+  /** A held-still item was embedded (at most `embedderMaxPerSecond` times a second). */
   onView: (view: EmbeddedView) => void;
   onError: (message: string) => void;
   /**
@@ -147,7 +160,7 @@ function useResizers(
 /**
  * The live recognition loop for a VisionCamera frame output. Runs entirely on the
  * camera thread: GPU resize → detector (throttled to `max_fps`) → stability →
- * crop → embedder (throttled to `max_per_second`). Frames arriving while it is
+ * crop → embedder (throttled to `embedderMaxPerSecond`). Frames arriving while it is
  * busy are dropped by the camera. Only small results cross to the JS thread.
  * The iOS resizer needs "yuv"; Android takes either (see camera-ladder for the choice).
  */
@@ -214,7 +227,7 @@ export function useLivePipeline(
   const { detector, embedder } = models;
   const onFrame = useMemo(() => {
     const detectEveryMs = 1000 / DETECTOR.max_fps;
-    const embedEveryMs = 1000 / EMBEDDER.max_per_second;
+    const embedEveryMs = 1000 / PIPELINE.embedderMaxPerSecond;
     const channels = DETECTOR.output[0];
     const show = DETECTOR.show_threshold;
     const keep = DETECTOR.keep_threshold;
@@ -246,12 +259,20 @@ export function useLivePipeline(
         });
         if (!claimed) return;
 
+        const frameStart = nowMs();
         const resized = detectorResizer.resize(frame);
+        const resizeMs = elapsedMs(frameStart);
         let best: ScoredBox | null;
+        let detectMs = 0;
+        let decodeMs = 0;
         try {
+          const detectStart = nowMs();
           const [output] = detector.runSync([resized.getPixelBuffer()]);
+          detectMs = elapsedMs(detectStart);
+          const decodeStart = nowMs();
           // Threshold 0: always get the best candidate, so its score can be logged.
           best = decodeBestBox(new Float32Array(output), channels, 0);
+          decodeMs = elapsedMs(decodeStart);
         } finally {
           resized.dispose();
         }
@@ -265,6 +286,7 @@ export function useLivePipeline(
           stability.box &&
           now - state.lastEmbedAt >= embedEveryMs
         ) {
+          const cropStart = nowMs();
           const input = new Float32Array(size * size * 3);
           const rgbx = new Uint8Array(size * size * 4);
           const source = cropResizer.resize(frame);
@@ -287,11 +309,15 @@ export function useLivePipeline(
           } finally {
             source.dispose();
           }
+          const cropMs = elapsedMs(cropStart);
+          const embedStart = nowMs();
           const [output] = embedder.runSync([input.buffer]);
+          const embedMs = elapsedMs(embedStart);
           view = {
             vector: l2Normalize(new Float32Array(output)),
             box: stability.box,
             crop: { rgbx, size },
+            timing: { cropMs, embedMs },
           };
         }
 
@@ -308,6 +334,7 @@ export function useLivePipeline(
           score: best ? best.score : null,
           stable,
           latencyMs: Date.now() - now,
+          stages: { resizeMs, detectMs, decodeMs, totalMs: elapsedMs(frameStart) },
         });
         if (view) scheduleOnRN(deliver.view, view);
       } catch (error) {

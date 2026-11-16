@@ -477,8 +477,14 @@ test("same-day checks and period comparisons", () => {
     sameLocalDay(local(2026, 10, 22, 23), local(2026, 10, 23, 0)),
     false,
   );
-  assert.equal(percentChange(1500, 1000), 50);
+  // Bounded to -100..100: the change is a share of the larger period.
+  assert.equal(percentChange(1500, 1000), 33);
   assert.equal(percentChange(500, 1000), -50);
+  assert.equal(percentChange(43697, 10500), 76, "M 436.97 vs M 105.00");
+  assert.equal(percentChange(4000, 1000), 75, "never above 100");
+  assert.equal(percentChange(0, 1000), -100, "never below -100");
+  assert.equal(percentChange(1000, 1000), 0);
+  assert.ok(Object.is(percentChange(999, 1000), 0), "a tiny drop is 0, not -0");
   assert.equal(percentChange(500, 0), null, "nothing to compare with");
 });
 

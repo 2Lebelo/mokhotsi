@@ -58,6 +58,7 @@
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "node scripts/ensure-native.mjs android && expo run:android",
+    "android:release": "node scripts/android-release.mjs",
     "start:dev": "expo start --dev-client",
     "prebuild:android": "node scripts/ensure-native.mjs android --force",
     "typecheck": "tsc --noEmit",

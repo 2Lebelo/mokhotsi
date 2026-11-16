@@ -28,18 +28,26 @@ export type EmbedderSpec = {
   /** Stored with every vector; changing it means re-embedding. */
   model_version: string;
   input: readonly [number, number, number];
+  /** Fixed by the embedder contract (float32 NHWC), not read from the manifest. */
   layout: TensorLayout;
   dtype: "float32";
   input_range: ValueRange;
+  /**
+   * How the exporter fits source pixels into `input`. This app only ever embeds
+   * square regions (centre square, `squareCrop`), so a letterbox never pads.
+   */
+  resize: "letterbox";
   dim: number;
-  max_per_second: number;
+  /** Minimum cosine similarity before the best product may be accepted. */
+  match_threshold: number;
+  /** Minimum lead of the best product over the runner-up before it may be accepted. */
+  match_margin: number;
+  /** SHA-256 of the model file, pinning exactly which export this manifest describes. */
+  sha256: string;
 };
 
 export type MatchingSpec = {
-  /** Minimum cosine similarity for a product to be proposed. */
-  accept_threshold: number;
-  /** Minimum lead of the best product over the runner-up before a match locks. */
-  margin: number;
+  /** How many candidate products a ranking returns (thresholds live on the embedder). */
   top_k: number;
 };
 
@@ -118,6 +126,18 @@ function float32(value: unknown, path: string): "float32" {
   return value;
 }
 
+function letterbox(value: unknown, path: string): "letterbox" {
+  if (value !== "letterbox") fail(path, '"letterbox"');
+  return value;
+}
+
+function hex256(o: Record<string, unknown>, key: string, path: string): string {
+  const value = o[key];
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value))
+    fail(`${path}.${key}`, "64 lowercase hex characters (a SHA-256)");
+  return value;
+}
+
 export function parseManifest(raw: unknown): VisionManifest {
   const root = record(raw, "manifest");
   const d = record(root.detector, "detector");
@@ -155,15 +175,17 @@ export function parseManifest(raw: unknown): VisionManifest {
       arch: text(e, "arch", "embedder"),
       model_version: text(e, "model_version", "embedder"),
       input: [eh, ew, ec],
-      layout: layout(e.layout, "embedder.layout"),
-      dtype: float32(e.dtype, "embedder.dtype"),
+      // The embedder tensor contract is fixed: float32, NHWC ([1, h, w, c]).
+      layout: "nhwc",
+      dtype: "float32",
       input_range: range(e.input_range, "embedder.input_range"),
+      resize: letterbox(e.resize, "embedder.resize"),
       dim: ints([e.dim], 1, "embedder.dim")[0],
-      max_per_second: positive(e, "max_per_second", "embedder"),
+      match_threshold: fraction(e, "match_threshold", "embedder"),
+      match_margin: fraction(e, "match_margin", "embedder"),
+      sha256: hex256(e, "sha256", "embedder"),
     },
     matching: {
-      accept_threshold: fraction(m, "accept_threshold", "matching"),
-      margin: fraction(m, "margin", "matching"),
       top_k: topK as number,
     },
   };

@@ -1,6 +1,6 @@
 export type Candidate = { productId: string; score: number };
 
-/** Rows kept at most (~15 MB at 1280 dims): enough for ~1,000 products on a 2 GB phone. */
+/** Rows kept at most (~3 MB at 256 dims): enough for ~1,000 products on a 2 GB phone. */
 export const MAX_INDEX_ROWS = 12_000;
 
 /**

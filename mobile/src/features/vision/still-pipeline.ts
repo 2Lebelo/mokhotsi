@@ -1,5 +1,6 @@
 import type { Image } from "react-native-nitro-image";
 
+import { elapsedMs, nowMs } from "@/ml/clock";
 import {
   centerSquare,
   squareCrop,
@@ -23,6 +24,9 @@ function tensorFor(shape: number[]): Float32Array<ArrayBuffer> {
 type Prepared = {
   pixels: ReturnType<typeof pixelSource>;
   box: ScoredBox | null;
+  /** Centre square + resize + reading the pixels, then the detector (0 without `detect`). */
+  cropMs: number;
+  detectMs: number;
 };
 
 /**
@@ -49,6 +53,7 @@ async function prepare(
   image: Image,
   detect: boolean,
 ): Promise<Prepared> {
+  const cropStart = nowMs();
   const square = centerSquare(image.width, image.height);
   const cropped = await image.cropAsync(
     square.x,
@@ -74,8 +79,10 @@ async function prepare(
     raw.height,
     raw.pixelFormat,
   );
-  if (!detect) return { pixels, box: null };
+  const cropMs = elapsedMs(cropStart);
+  if (!detect) return { pixels, box: null, cropMs, detectMs: 0 };
 
+  const detectStart = nowMs();
   const { detector: spec } = MANIFEST;
   const input = tensorFor(inputShape(spec));
   sampleToTensor(
@@ -90,19 +97,21 @@ async function prepare(
   const best = decodeBestBox(new Float32Array(output), spec.output[0], 0);
   // A single photo has no box on screen yet, so it must reach the show threshold.
   const box = holdBox(best, false, spec.show_threshold, spec.keep_threshold);
+  const detectMs = elapsedMs(detectStart);
   if (DEBUG_VISION)
     console.log(
       `[vision] still detection score ${best?.score.toFixed(3) ?? "none"} · box ${box ? "used" : "rejected"}`,
     );
-  return { pixels, box };
+  return { pixels, box, cropMs, detectMs };
 }
 
 /** Embeds one square region of the prepared image. */
 async function embedRegion(
   models: VisionModels,
-  { pixels, box }: Prepared,
+  { pixels, box, cropMs, detectMs }: Prepared,
   region: Box,
 ): Promise<EmbeddedView> {
+  const embedStart = nowMs();
   const { embedder: spec } = MANIFEST;
   const size = spec.input[0];
   const input = tensorFor(inputShape(spec));
@@ -121,6 +130,9 @@ async function embedRegion(
     vector: l2Normalize(new Float32Array(output)),
     box,
     crop: { rgbx, size },
+    // Sampling the 224 px input is counted with the embedder, as the live pipeline counts it
+    // with the crop: both are well under a millisecond next to inference.
+    timing: { cropMs, detectMs, embedMs: elapsedMs(embedStart) },
   };
 }
 

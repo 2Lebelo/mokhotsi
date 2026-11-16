@@ -8,6 +8,7 @@ import Animated, { ZoomIn } from "react-native-reanimated";
 import { useSession } from "@/auth/session-provider";
 import { useShop } from "@/db/ShopProvider";
 import { SignOutPhoneSheet } from "@/features/account/sign-out-phone-sheet";
+import { EVALUATION_ENABLED } from "@/features/evaluation/config";
 import { syncStatusText } from "@/features/sync/sync-text";
 import { useSync } from "@/features/sync/sync-provider";
 import {
@@ -63,6 +64,14 @@ function useItems(onSignOutPhone: () => void): DockItem[] {
       icon: "storefront-outline",
       href: "/shops",
     },
+    // Research builds only (EXPO_PUBLIC_EVALUATION=1): see features/evaluation.
+    EVALUATION_ENABLED &&
+      can("shop:manage") && {
+        label: "Evaluation",
+        description: "Measure recognition accuracy and speed",
+        icon: "flask-outline",
+        href: "/evaluation",
+      },
     {
       label: "Sync now",
       description: syncStatusText(status),
